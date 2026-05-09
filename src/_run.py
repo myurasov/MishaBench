@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import base64
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -81,21 +82,39 @@ def ssh_run(host: str, script: str, *, env: dict[str, str] | None = None,
 def ssh_run_stream(host: str, script: str, *,
                    env: dict[str, str] | None = None) -> int:
     """Like ssh_run, but stream stdout / stderr to the user's terminal in
-    real time. Returns the SSH exit code.
+    real time over a forced PTY. Returns the SSH exit code.
 
     Use for steps where progress visibility matters (uv sync, package
     downloads, anything that prints periodic status to stderr). The
     caller doesn't get the captured output -- the user sees it directly.
+
+    Why `ssh -tt`:
+
+      - `uv` (and most modern Rust CLIs) call `isatty(stdout)` and switch
+        to non-interactive mode -- no progress bars, sometimes no status
+        output at all -- when they think they're piped. Without a PTY
+        the user just sees blank silence while gigabytes download.
+      - Pipe-mode stdio defaults to block-buffering on both ends; even
+        the lines uv *does* emit get stuck in a 4 KiB buffer and
+        appear in chunks (or never, on a fast-finishing command).
+      - `-tt` forces PTY allocation regardless of whether the local
+        stdin is a TTY, so the remote process sees an interactive
+        terminal and behaves as if the user were sitting at the host.
+
+    The script is base64-encoded and passed as a remote-command argument
+    rather than via stdin -- with `-tt`, stdin would be the PTY itself
+    and feeding the script through it races with the PTY's own input
+    echo (the script bytes get echoed back to the user's terminal
+    before bash interprets them).
     """
     env_prelude = ""
     if env:
         for k, v in env.items():
             env_prelude += f"export {k}={shlex.quote(v)}\n"
     full = "set -e\n" + env_prelude + script
+    b64 = base64.b64encode(full.encode("utf-8")).decode("ascii")
     proc = subprocess.run(
-        ["ssh", host, "bash", "-s"],
-        input=full,
-        text=True,
+        ["ssh", "-tt", host, f"echo {b64} | base64 -d | bash"],
     )
     return proc.returncode
 
