@@ -146,9 +146,10 @@ def _system_grid(info: SystemInfo) -> str:
     ]
     if info.gpus:
         for g in info.gpus:
+            mem = f"{g.memory_mib} MiB" if g.memory_mib else "memory n/a (unified)"
             rows.append(
                 (f"GPU [{g.index}]",
-                 f"{g.name} -- {g.memory_mib} MiB, driver {g.driver}, "
+                 f"{g.name} -- {mem}, driver {g.driver}, "
                  f"sm_{g.compute_cap or '?'}")
             )
         rows.append(("CUDA runtime",

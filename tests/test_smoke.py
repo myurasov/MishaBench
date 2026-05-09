@@ -189,6 +189,43 @@ def test_report_renders_well_formed_html(tmp_path: Path):
     assert "CUDA (NVIDIA)" in html
 
 
+def test_unified_memory_gpu_renders_without_crashing():
+    """DGX Spark GB10 (and Jetson) report `[N/A]` for memory.total because
+    they have unified memory. The probe must keep the GPU listed and the
+    report must render `memory n/a (unified)` instead of crashing."""
+    from src.report import render
+    from src.system import GpuInfo, SystemInfo, short_summary
+    info = SystemInfo(
+        hostname="myspark1", os_name="Linux", os_version="6.17", kernel="x",
+        arch="aarch64", distro="Ubuntu 24.04.4 LTS", cpu_model="ARM Cortex",
+        cpu_count_physical=20, cpu_count_logical=20, ram_total_gb=121.69,
+        ram_avail_gb=100.0, disk_total_gb=1000.0, disk_free_gb=800.0,
+        python_version="3.11.0", python_impl="CPython",
+        libs={"torch": "2.11.0"}, has_cuda=True, cuda_runtime="13.0",
+        nvidia_driver="580.142",
+        gpus=[GpuInfo(index=0, name="NVIDIA GB10", memory_mib=None,
+                      driver="580.142", compute_cap="12.1")],
+    )
+    s = short_summary(info)
+    assert "NVIDIA GB10" in s
+    # memory_mib was None -- summary shouldn't print "None MiB"
+    assert "None" not in s
+
+    html = render([], info, total_seconds=0.0)
+    assert "NVIDIA GB10" in html
+    assert "memory n/a (unified)" in html
+
+
+def test_parse_na_helpers():
+    """Direct test of the [N/A] tolerance in the nvidia-smi parser."""
+    from src.system import _parse_int_or_none
+    assert _parse_int_or_none("[N/A]") is None
+    assert _parse_int_or_none("N/A") is None
+    assert _parse_int_or_none("") is None
+    assert _parse_int_or_none(" 4096 ") == 4096
+    assert _parse_int_or_none("not a number") is None
+
+
 # ---- CLI ----
 
 def test_cli_help_exits_zero():

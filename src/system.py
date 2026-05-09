@@ -29,7 +29,13 @@ from .power import detect_apple_tdp_w
 class GpuInfo:
     index: int
     name: str
-    memory_mib: int
+    # Optional because unified-memory devices (DGX Spark GB10, Jetson) report
+    # `[N/A]` from `nvidia-smi --query-gpu=memory.total` -- they share VRAM
+    # with system RAM and have no separate pool to query. We still want the
+    # GPU listed; the report renders "memory n/a" instead of fabricating a
+    # number. When torch.cuda is available, probe() backfills this from
+    # `torch.cuda.get_device_properties().total_memory`.
+    memory_mib: int | None
     driver: str
     compute_cap: str | None = None
 
@@ -117,6 +123,19 @@ def _read_cpu_model() -> str:
     return platform.processor() or "unknown"
 
 
+def _parse_int_or_none(s: str) -> int | None:
+    """Parse an int from nvidia-smi CSV output. Returns None for `[N/A]`,
+    `N/A`, or any field nvidia-smi declines to fill (notably memory.total
+    on unified-memory devices like the DGX Spark GB10 and Jetson series)."""
+    s = s.strip()
+    if not s or s in {"[N/A]", "N/A"}:
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
 def _read_gpus() -> tuple[list[GpuInfo], str | None]:
     if not shutil.which("nvidia-smi"):
         return [], None
@@ -131,17 +150,66 @@ def _read_gpus() -> tuple[list[GpuInfo], str | None]:
         if len(parts) < 4:
             continue
         try:
-            gpus.append(GpuInfo(
-                index=int(parts[0]),
-                name=parts[1],
-                memory_mib=int(parts[2]),
-                driver=parts[3],
-                compute_cap=parts[4] if len(parts) > 4 else None,
-            ))
-            driver = parts[3]
+            idx = int(parts[0])
         except ValueError:
             continue
+        gpus.append(GpuInfo(
+            index=idx,
+            name=parts[1] or "?",
+            memory_mib=_parse_int_or_none(parts[2]),
+            driver=parts[3],
+            compute_cap=parts[4] if len(parts) > 4 else None,
+        ))
+        driver = parts[3]
     return gpus, driver
+
+
+def _enrich_gpus_from_torch(gpus: list[GpuInfo],
+                            driver: str | None) -> list[GpuInfo]:
+    """When nvidia-smi parsing left holes -- or missed the GPU entirely --
+    fall back to `torch.cuda.get_device_properties()`. Torch is what the
+    bench actually uses, so its view is authoritative for the report.
+
+    Two scenarios:
+      - nvidia-smi missed the GPU (containerized / restricted hosts):
+        synthesize the entry from torch alone.
+      - nvidia-smi found the GPU but `memory.total` came back `[N/A]`
+        (DGX Spark / Jetson unified memory): backfill memory_mib from
+        torch's reported total_memory.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return gpus
+        torch_count = torch.cuda.device_count()
+    except Exception:
+        return gpus
+
+    if not gpus:
+        for i in range(torch_count):
+            try:
+                p = torch.cuda.get_device_properties(i)
+            except Exception:
+                continue
+            gpus.append(GpuInfo(
+                index=i,
+                name=p.name,
+                memory_mib=p.total_memory // (2 ** 20),
+                driver=driver or "?",
+                compute_cap=f"{p.major}.{p.minor}",
+            ))
+        return gpus
+
+    for g in gpus:
+        if g.memory_mib is None and g.index < torch_count:
+            try:
+                p = torch.cuda.get_device_properties(g.index)
+                g.memory_mib = p.total_memory // (2 ** 20)
+                if not g.compute_cap:
+                    g.compute_cap = f"{p.major}.{p.minor}"
+            except Exception:
+                pass
+    return gpus
 
 
 def _read_cuda_runtime() -> str | None:
@@ -184,6 +252,8 @@ def probe() -> SystemInfo:
     gpus, driver = _read_gpus()
     cuda_runtime = _read_cuda_runtime()
     has_cuda, has_mps = _detect_torch_caps()
+    if has_cuda:
+        gpus = _enrich_gpus_from_torch(gpus, driver)
 
     libs = {
         "numpy": _try_import("numpy"),
@@ -248,10 +318,13 @@ def probe() -> SystemInfo:
 
 def short_summary(info: SystemInfo) -> str:
     """One-line summary for terminal headers / log lines."""
-    gpu_part = (
-        ", ".join(f"{g.name} ({g.memory_mib} MiB)" for g in info.gpus)
-        if info.gpus else "no NVIDIA GPU"
-    )
+    if info.gpus:
+        gpu_part = ", ".join(
+            f"{g.name} ({g.memory_mib} MiB)" if g.memory_mib else g.name
+            for g in info.gpus
+        )
+    else:
+        gpu_part = "no NVIDIA GPU"
     cuda_part = f"cuda={info.cuda_runtime}" if info.has_cuda else "cuda=off"
     return (
         f"{info.hostname} | {info.distro or info.os_name} {info.arch} | "
