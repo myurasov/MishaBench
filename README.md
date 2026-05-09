@@ -180,6 +180,7 @@ mishabench/
 
 ## Notes
 
+- **Progress is visible at every step.** `./mishabench install` streams `uv sync` output (resolution + per-package downloads); `./mishabench test` runs pytest in verbose mode (per-test names); `./mishabench run` prints an `[N/M]` counter and a `running...` start line *before* each bench so slow CV / LLM benches don't look hung. `--remote` streams the remote `uv sync` output and rsync's per-file progress live -- you see multi-GiB torch wheels downloading in real time, not after the fact.
 - **First run downloads model weights** (~2.5 GiB total: TinyLlama 2.2 GiB + MiniLM 80 MiB + DINOv2 85 MiB + ResNet50 100 MiB + EfficientNet 20 MiB). The download counts against the wall-clock budget; the second run skips it.
 - The bench is **timing-only**, not accuracy-only. Inputs are random tensors; we measure throughput / latency, not whether the model produces correct outputs.
 - The report is **self-contained** -- inline CSS, inline SVG bars, zero JS, no external fonts or images. It opens in any browser without internet.

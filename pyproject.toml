@@ -86,7 +86,9 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-ra -q"
+# -v: print test names as they run (progress visibility);
+# -ra: show short summary for non-passing tests at the end.
+addopts = "-ra -v"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]

@@ -182,8 +182,31 @@ results/<runid>/
     *.egg-info, dist, build, uv.lock (remote resolves its own), .git,
     results/, .mishabench-cache/, *.parquet.
 
-9. CLI contract
----------------
+9. Progress visibility
+----------------------
+
+  - `./mishabench install` runs `uv sync --extra dev` without --quiet so
+    the user sees uv's "Resolved N packages / Downloaded torch (700 MiB)
+    / Installed N packages" output live. Same for the `--gpu` extras
+    side-install.
+  - `./mishabench test` uses pytest `-v` (verbose) so each test name
+    prints as it runs, not just dots.
+  - `./mishabench run` prints an `[N/M]` counter on every bench, plus a
+    `running...` start line *before* the bench fn is called. Slow benches
+    (CV inference, LLM decode on CPU) show movement immediately instead
+    of appearing hung. The result line is indented under the start line:
+
+        [ 1/28] run  cv.resnet50.cuda (cuda) running...
+                ok   -> 234.50 img/s in 8.20s, 145.0W
+
+  - `./mishabench run --remote <host>` streams the remote `uv sync`
+    output via `ssh_run_stream`, and the rsync up/down via streaming
+    `rsync_to`/`rsync_from`. Nothing is captured-then-printed-at-end --
+    if a multi-GiB torch wheel is downloading on the remote, the user
+    sees the progress bar.
+
+10. CLI contract
+----------------
 
   ./mishabench info                       -- system probe one-liner + power source disclosure
   ./mishabench list [--suites SUITES]     -- enumerate benches with expected runtimes

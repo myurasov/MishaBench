@@ -65,14 +65,14 @@ deps_ready() {
 }
 
 sync_deps() {
-  log "syncing dependencies (uv sync --extra dev)"
-  if uv sync --extra dev --quiet && deps_ready; then
+  log "syncing dependencies (uv sync --extra dev) -- live progress follows"
+  if uv sync --extra dev && deps_ready; then
     touch "$INSTALL_STAMP"
   else
     warn "dependency sync failed or incomplete; recreating $VENV_DIR and retrying"
     rm -rf "$VENV_DIR"
     ensure_venv
-    uv sync --extra dev --quiet
+    uv sync --extra dev
     deps_ready || die "dependency sync finished but venv is incomplete; try ./mishabench clean && ./mishabench install"
     touch "$INSTALL_STAMP"
   fi
@@ -83,9 +83,9 @@ sync_deps() {
   # try to resolve all extras) and install them directly into the venv
   # only when the user opts in via `./mishabench install --gpu`.
   if [ -f "$GPU_STAMP" ]; then
-    log "installing gpu extras (cudf-cu12 + cupy-cuda12x from pypi.nvidia.com)"
+    log "installing gpu extras (cudf-cu12 + cupy-cuda12x from pypi.nvidia.com) -- live progress follows"
     if ! uv pip install --extra-index-url https://pypi.nvidia.com \
-                        cudf-cu12 cupy-cuda12x --quiet; then
+                        cudf-cu12 cupy-cuda12x; then
       warn "gpu extras failed to install; cudf/cupy benches will be skipped at run time"
       warn "(this is expected on non-Linux or non-CUDA hosts; remove $GPU_STAMP to drop the marker)"
     fi

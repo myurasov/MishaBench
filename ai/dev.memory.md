@@ -42,3 +42,9 @@ Accumulated maintainer preferences. Each entry is a hard rule unless explicitly 
 - **One- or two-sentence commit messages.** Subject + (when needed) one paragraph of *why*.
 - **No emoji in code, comments, commit messages, or docs.** ASCII only.
 - **No "we should" / "we could" / "TODO maybe" comments.** If it's worth doing, file an issue. If it's not, delete the comment.
+
+## Progress visibility (always-on)
+
+- **Never `--quiet` / `-q` an install or test step.** The user wants to see uv's "Downloaded torch (700 MiB)" and pytest's per-test names; silent runs feel hung. The wrapper enforces this for `uv sync` + `uv pip install`; pyproject's `addopts = "-ra -v"` enforces it for pytest.
+- **For SSH-driven remote work, stream don't capture.** `ssh_run` captures (use it for short structured queries). `ssh_run_stream` lets stdout/stderr flow through to the user's terminal (use it for `uv sync`, package downloads, anything > 5 sec). Same rule for rsync: `rsync_to` / `rsync_from` are streaming by design and return an int rc, not a RunResult.
+- **Per-bench `[N/M]` + start line is mandatory.** Slow benches (CV inference, LLM decode) take 30 s+ on CPU; without the start line printed *before* the bench fn runs, the user can't tell the suite hasn't hung.

@@ -118,18 +118,26 @@ def _coerce_result(raw: Any) -> dict[str, Any]:
     return {"metric": "value", "value": raw, "unit": "", "notes": {}, "iters": 1}
 
 
-def _run_one(bench: Bench, cfg: BenchConfig, info: SystemInfo) -> BenchResult:
+def _run_one(bench: Bench, cfg: BenchConfig, info: SystemInfo,
+             prefix: str = "  ") -> BenchResult:
+    """Run a single bench. `prefix` is the [N/M] counter the caller wants
+    on the start line; the result line is indented to that width so the
+    output reads as paired lines per bench. Slow benches (CV inference,
+    LLM decode) print the start line immediately so the user sees that
+    work has begun, then the result on a continuation line when done."""
     started = _now_iso()
+    indent = " " * len(prefix)
+
     cap_ok, cap_reason = _capability_ok(bench, info, cfg)
     if not cap_ok:
-        console.print(f"  [yellow]skip[/] {bench.id} :: {cap_reason}")
+        console.print(f"{prefix} [yellow]skip[/] {bench.id} ({bench.device}): {cap_reason}")
         return BenchResult(
             id=bench.id, suite=bench.suite, name=bench.name, device=bench.device,
             metric="skipped", value=None, unit="", seconds=0.0, iters=0,
             ok=False, error=cap_reason, started_at=started,
         )
 
-    console.print(f"  [cyan]run[/]  {bench.id} ({bench.device})", end=" ")
+    console.print(f"{prefix} [cyan]run[/]  {bench.id} ({bench.device}) [dim]running...[/]")
     t0 = time.perf_counter()
     monitor = PowerMonitor(apple_tdp_w=info.apple_tdp_w)
     try:
@@ -145,11 +153,12 @@ def _run_one(bench: Bench, cfg: BenchConfig, info: SystemInfo) -> BenchResult:
             merged_notes["power_estimated"] = est
         watt_part = (f", {avg_w:.1f}W{' est' if est else ''}"
                      if avg_w is not None else "")
-        console.print(
-            f"-> {norm['value']:.2f} {norm['unit']} in {elapsed:.2f}s{watt_part}"
+        value_str = (
+            f"{norm['value']:.2f} {norm['unit']}"
             if isinstance(norm["value"], (int, float))
-            else f"-> {norm['value']} {norm['unit']} in {elapsed:.2f}s{watt_part}"
+            else f"{norm['value']} {norm['unit']}"
         )
+        console.print(f"{indent} [green]ok[/]   -> {value_str} in {elapsed:.2f}s{watt_part}")
         return BenchResult(
             id=bench.id, suite=bench.suite, name=bench.name, device=bench.device,
             metric=norm["metric"], value=norm["value"], unit=norm["unit"],
@@ -159,7 +168,7 @@ def _run_one(bench: Bench, cfg: BenchConfig, info: SystemInfo) -> BenchResult:
     except Exception as e:
         elapsed = time.perf_counter() - t0
         tb = traceback.format_exc(limit=4)
-        console.print(f"[red]FAIL[/] in {elapsed:.2f}s: {type(e).__name__}: {e}")
+        console.print(f"{indent} [red]FAIL[/] in {elapsed:.2f}s: {type(e).__name__}: {e}")
         return BenchResult(
             id=bench.id, suite=bench.suite, name=bench.name, device=bench.device,
             metric="error", value=None, unit="", seconds=elapsed, iters=0,
@@ -203,15 +212,18 @@ def run_all(cfg: BenchConfig, info: SystemInfo) -> tuple[list[BenchResult], Path
 
     started = time.perf_counter()
     results: list[BenchResult] = []
+    total = len(selected)
+    width = max(2, len(str(total)))  # zero-pad counter to align prefix
     jsonl_path = out_dir / "results.jsonl"
     with jsonl_path.open("w", encoding="utf-8") as fp:
-        for bench in selected:
+        for i, bench in enumerate(selected, 1):
+            prefix = f"[{i:>{width}d}/{total}]"
             elapsed_total = time.perf_counter() - started
             remaining = cfg.effective_budget_s - elapsed_total
             need = cfg.expected_for(bench.expected_seconds)
             if remaining < need:
                 console.print(
-                    f"  [yellow]budget[/] skipping {bench.id}: "
+                    f"{prefix} [yellow]budget[/] {bench.id}: "
                     f"need ~{need:.0f}s, only {remaining:.0f}s left"
                 )
                 r = BenchResult(
@@ -221,7 +233,7 @@ def run_all(cfg: BenchConfig, info: SystemInfo) -> tuple[list[BenchResult], Path
                     started_at=_now_iso(),
                 )
             else:
-                r = _run_one(bench, cfg, info)
+                r = _run_one(bench, cfg, info, prefix=prefix)
             results.append(r)
             fp.write(json.dumps(r.to_dict()) + "\n")
             fp.flush()

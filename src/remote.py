@@ -66,7 +66,8 @@ def run_remote(host: str, *, suites: str | None = None, quick: bool = False,
     remote_results = f"{remote_base}/results/{runid}"
     local_dir = (local_results_root or (Path.cwd() / "results")) / f"{host}-{runid}"
 
-    # 1. Ensure remote layout exists
+    # 1. Ensure remote layout exists. ssh_run is fine here -- no progress
+    #    to stream, just two mkdir's.
     console.print(f"[bold]>[/bold] mkdir on {host}")
     r = _run.ssh_run(host, f"""
         mkdir -p {remote_tool}
@@ -76,25 +77,27 @@ def run_remote(host: str, *, suites: str | None = None, quick: bool = False,
         console.print(f"[red]ssh mkdir failed[/red]\n{r.stderr}")
         return None
 
-    # 2. Rsync project sources
+    # 2. Rsync project sources -- streams rsync's per-file progress live
+    #    so the user sees the upload as it happens.
     console.print(f"[bold]>[/bold] rsync {project.name}/ -> {host}:{remote_tool}/")
-    r = _run.rsync_to(host, project, remote_tool, exclude=_RSYNC_EXCLUDES)
-    if not r.ok:
-        console.print(f"[red]rsync failed[/red]\n{r.stderr}")
+    rc = _run.rsync_to(host, project, remote_tool, exclude=_RSYNC_EXCLUDES)
+    if rc != 0:
+        console.print(f"[red]rsync failed (rc={rc})[/red]")
         return None
 
-    # 3. Ensure uv + sync remote venv. We deliberately re-use whatever
-    #    Python the host has (uv picks 3.10+); the bench tolerates 3.10/.11/.12.
-    #    With --gpu we also `uv pip install` the RAPIDS stack out-of-band
-    #    against pypi.nvidia.com -- mirrors the local --gpu wrapper rule.
+    # 3. Ensure uv + sync remote venv. Streamed -- the user sees uv's
+    #    "Resolved N packages" / "Downloaded torch (700 MiB)" progress
+    #    live, instead of waiting silently while gigabytes copy. With
+    #    --gpu we also `uv pip install` the RAPIDS stack out-of-band
+    #    against pypi.nvidia.com.
     extras = "--extra dev"
     gpu_step = (
         "uv pip install --extra-index-url https://pypi.nvidia.com cudf-cu12 cupy-cuda12x"
         if gpu_extra else "true"
     )
     console.print(f"[bold]>[/bold] uv sync on {host} ({extras}"
-                  f"{' + gpu extras' if gpu_extra else ''})")
-    r = _run.ssh_run(host, f"""
+                  f"{' + gpu extras' if gpu_extra else ''}) -- live output:")
+    rc = _run.ssh_run_stream(host, f"""
         export PATH="$HOME/.local/bin:$PATH"
         if ! command -v uv >/dev/null; then
           echo "==== Installing uv on remote ===="
@@ -106,10 +109,9 @@ def run_remote(host: str, *, suites: str | None = None, quick: bool = False,
         {gpu_step}
         echo "==== uv sync complete ===="
     """)
-    if not r.ok:
-        console.print(f"[red]uv sync failed[/red]\n{r.stdout}\n{r.stderr}")
+    if rc != 0:
+        console.print(f"[red]uv sync failed (rc={rc})[/red]")
         return None
-    console.print(r.stdout.splitlines()[-1] if r.stdout else "")
 
     # 4. Build remote run command and stream output live
     flags: list[str] = []
@@ -132,12 +134,13 @@ def run_remote(host: str, *, suites: str | None = None, quick: bool = False,
                       "fetching whatever results were written so far")
 
     # 5. rsync results back regardless of bench exit code (partial results
-    #    are still useful)
+    #    are still useful). Streamed too -- the result tarball is small
+    #    but a slow link is a slow link.
     local_dir.mkdir(parents=True, exist_ok=True)
     console.print(f"[bold]>[/bold] rsync {host}:{remote_results}/ -> {local_dir}/")
-    r = _run.rsync_from(host, remote_results, local_dir)
-    if not r.ok:
-        console.print(f"[red]rsync from remote failed[/red]\n{r.stderr}")
+    rc = _run.rsync_from(host, remote_results, local_dir)
+    if rc != 0:
+        console.print(f"[red]rsync from remote failed (rc={rc})[/red]")
         return None
 
     console.print(f"[green]done[/green] -- results in {local_dir}/")
