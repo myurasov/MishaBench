@@ -1,0 +1,104 @@
+[project]
+name = "mishabench"
+version = "0.1.0"
+description = "Cross-platform CPU + GPU benchmark for typical data-analysis, computer-vision, and LLM workloads. Single-host or remote (SSH). Produces a self-contained HTML report. Designed to complete in under an hour."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Mikhail Yurasov" }]
+requires-python = ">=3.10"
+keywords = [
+    "benchmark",
+    "cpu",
+    "gpu",
+    "cuda",
+    "nvidia",
+    "data-analysis",
+    "computer-vision",
+    "llm",
+    "pytorch",
+    "rapids",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Benchmark",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "polars>=1.0",
+    "pyarrow>=15",
+    "pillow>=10.2",
+    "opencv-python-headless>=4.9",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "transformers>=4.40",
+    "sentence-transformers>=2.7",
+    "tiktoken>=0.7",
+    "huggingface-hub>=0.23",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+# NVIDIA RAPIDS (cudf, cupy) is installed out-of-band by the wrapper's
+# `./mishabench install --gpu` -- it shells out to:
+#   uv pip install --extra-index-url https://pypi.nvidia.com cudf-cu12 cupy-cuda12x
+# We deliberately don't list those packages in pyproject.toml because uv
+# resolves *all* extras during lock generation, and the cudf-cu12 stub
+# fails on macOS (it pre-checks for nvidia-smi). Keeping RAPIDS out of
+# the project metadata means macOS users can `./mishabench install`
+# without surprises; the data-suite GPU paths soft-import cudf at run
+# time and skip cleanly when it isn't there.
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/myurasov/MishaBench"
+Repository = "https://github.com/myurasov/MishaBench"
+Issues = "https://github.com/myurasov/MishaBench/issues"
+
+# Don't install this project itself -- invoke as `./mishabench` (which
+# runs `python -m src` under PYTHONPATH=<project-root>) or
+# `uv run python -m src`. This avoids setuptools' `__editable__*.pth`
+# shim, which some cloud-synced filesystems mark UF_HIDDEN, blocking
+# Python 3.12.13+ from loading it.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra -q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+# Typer's idiomatic API uses `typer.Option(...)` directly in function-arg
+# defaults; ruff's B008 (function call in default) flags it on every CLI
+# command. We accept it for cli.py only.
+[tool.ruff.lint.per-file-ignores]
+"src/cli.py" = ["B008"]

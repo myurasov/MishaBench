@@ -1,0 +1,201 @@
+MishaBench -- canonical specification
+=====================================
+
+This file describes what MishaBench measures, how, and what it
+guarantees about the output. It is the source of truth. README.md is
+explanatory; this file is normative.
+
+1. Mission
+----------
+
+Produce honest, reproducible CPU and GPU benchmark scores for the
+workloads people actually run -- typical data-analysis, computer-vision,
+and LLM tasks -- in under an hour, with a self-contained HTML report
+that can be shared by attaching a single file.
+
+Three dimensions of "honest":
+
+  - **Measurement honesty**: cuda/mps sync before perf_counter, warmup
+    before measurement, geomean (not arithmetic) for composites, no
+    fabricated wattage.
+  - **Disclosure**: the report says where every wattage figure came
+    from (nvidia-smi, RAPL, Apple TDP estimate). Estimates are marked
+    with a star.
+  - **Reproducibility**: synthetic inputs (no dataset dependencies),
+    fixed score-scale constant across releases, single self-contained
+    HTML report that opens offline.
+
+2. Suites and benchmarks
+------------------------
+
+Three suites, all default-on. `--suites data,cv,llm` is the explicit
+form; the default is "all three".
+
+2.1 data -- pandas / polars / cudf
+
+  D1 csv_parse        Parse a synthetic 5M-row CSV (~150 MiB), sum two
+                      numeric columns. Reported as MiB/s parsed.
+  D2 group_aggregate  groupby on 5M rows, 1024 groups, multi-agg
+                      (sum, mean, max, count). Reported as M rows / s.
+  D3 join             5M-row left-join with 500k-row dim table on
+                      integer key. Reported as M rows joined.
+  D4 parquet_round    Snappy parquet write+read of 5M rows. Reported as
+                      MiB round-tripped.
+  D5 string_ops       Regex extract + uppercase over 1M strings shaped
+                      like 'abc-1234@host42.example'. Reported as M rows.
+
+  Variants per workload: pandas (cpu), polars (cpu), cudf (cuda) where
+  available. cudf paths are skipped with a clear reason on macOS / on
+  Linux without `--gpu` extra installed.
+
+  Quick-mode size scaler: 10x smaller (500k main / 50k dim / 100k strings).
+
+2.2 cv -- vision + torchvision + DINOv2 + OpenCV
+
+  C1 resnet50         ResNet-50 forward pass throughput, 224x224.
+                      CPU batch 4, CUDA batch 32, MPS batch 16.
+  C2 efficientnet_b0  EfficientNet-B0 forward pass throughput.
+                      Same batch shapes per device class.
+  C3 conv2d_micro     Pure Conv2D microbench, 64->64 channels, 3x3
+                      kernel, batch 32, 56x56 spatial. Reported as
+                      GFLOPS (computed from kernel ops, not theoretical).
+  C4 image_resize     OpenCV resize 1920x1080 -> 224x224 throughput
+                      (img/s). CPU only -- opencv-python-headless does
+                      not ship CUDA kernels.
+  C5 dinov2_features  facebook/dinov2-small forward pass throughput.
+
+  Quick-mode iter scaler: 4x fewer iterations, same shapes (timing
+  stays representative; throughput numbers compare apples-to-apples).
+
+2.3 llm -- HF transformers + sentence-transformers
+
+  L1 tokenize         HF fast (Rust) tokenizer encode throughput
+                      (tokenizations/s). CPU only.
+  L2 embed_minilm     sentence-transformers/all-MiniLM-L6-v2 encode
+                      throughput (sentences/s). CPU/CUDA/MPS.
+  L3 prefill          TinyLlama-1.1B forward pass at seq=512, reported
+                      as prefill tok/s (iters * seq / elapsed).
+                      CPU/CUDA/MPS.
+  L4 decode           TinyLlama-1.1B autoregressive decode of 128 new
+                      tokens, reported as decode tok/s. CPU/CUDA/MPS.
+
+  Default models (overridable via env vars):
+    MISHABENCH_LLM_MODEL   = TinyLlama/TinyLlama-1.1B-Chat-v1.0
+    MISHABENCH_EMBED_MODEL = sentence-transformers/all-MiniLM-L6-v2
+
+  dtype policy: CPU fp32 (memory + reproducibility), CUDA fp16
+  (typical inference), MPS fp16 (Apple Silicon prefers fp16).
+
+  Quick-mode scaler: shorter seqs (256 vs 512), fewer iters, fewer
+  decode tokens (64 vs 128), batch 1 instead of >1.
+
+3. Runtime budgeting
+--------------------
+
+  - Default: 60-min hard cap (`BenchConfig.total_budget_s = 3600`).
+  - Quick: 5-min hard cap (`QUICK_BUDGET_S = 300`), workloads scaled by
+    `QUICK_SCALE = 0.1`.
+  - Per-bench guard: 5-min cap; a single bench cannot eat more than
+    `per_bench_budget_s = 300`. (Future work: hard timeout via
+    multiprocessing; today the bench respects the budget cooperatively
+    via shape sizing.)
+  - Budget enforcement: the runner skips the next bench if its
+    `expected_for(...)` (post quick-scaling) would push total over the
+    budget. Skips show up as `ok=false, error="budget: ..."`.
+
+4. Power monitoring
+-------------------
+
+  - **NVIDIA**: `nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits`
+    polled at 2 Hz (interval_s = 0.5). Per-GPU power; primary GPU
+    (index 0) is what's attributed to the bench. Peak-across-GPUs
+    tracked separately for the System section.
+  - **Intel/AMD on Linux**: `/sys/class/powercap/intel-rapl:0/energy_uj`
+    cumulative microjoule counter, sampled at bench start and end.
+    delta_J / wall_seconds = avg watts. Negative deltas treated as
+    counter wraparound and dropped (rare in seconds-scale benches).
+  - **Apple Silicon**: chip-name lookup table in `power.APPLE_TDP_W`.
+    Values are sustained-package TDPs. Marked `estimated=True` and
+    rendered with a star in the report. We do not call `powermetrics`
+    (requires sudo).
+  - **No source available**: the field is `None`; the report shows "-".
+
+5. Scoring
+----------
+
+  - Per-bench raw value: as the bench reports it (e.g. "img/s",
+    "MiB/s", "GFLOPS").
+  - Per (suite, device) score: geometric mean of per-bench raw values
+    in the bucket * `SCORE_SCALE = 1000.0`. Geomean drops non-positive
+    values (a 0 or negative would zero / invalidate the entire score).
+  - Per-device total: geometric mean of per-suite scores for that
+    device. A device that didn't run a suite (e.g. CUDA on the cv
+    suite when no GPU was available) just has fewer suites in its
+    total.
+  - Points-per-watt (per cell or device): `score / avg_watts`. The
+    `estimated_power` flag is propagated up so the report can mark
+    star-estimated cells.
+
+6. Output schema
+----------------
+
+results/<runid>/
+  results.jsonl   one JSON per line, schema:
+                  {id, suite, name, device, metric, value, unit,
+                   seconds, iters, ok, error, notes, started_at}
+                  notes always carries:
+                    notes.power = {duration_s, cpu_avg_w, cpu_energy_j,
+                                   cpu_estimated, gpu_avg_w, gpu_energy_j,
+                                   gpu_peak_w, n_samples}
+                    notes.avg_watts = device-relevant avg (W)
+                    notes.power_estimated = bool
+  system.json     SystemInfo dataclass dump (cpu, ram, gpus, libs,
+                   apple_tdp_w, has_rapl, has_cuda, has_mps, has_cudf,
+                   has_cupy)
+  report.html     self-contained -- inline CSS, inline SVG bars, no JS,
+                   no external assets.
+
+7. Report layout (top to bottom)
+--------------------------------
+
+  Header: project name, hostname, timestamp, total wall time, label tags.
+  Scores: device columns (CPU / CUDA / MPS), suite rows + Total. Each
+          cell shows score, avg watts, pts/W. Star = estimated.
+  System: hostname, OS, CPU, RAM, disk, python, GPUs, CUDA / driver,
+          power source disclosure, library inventory.
+  Per-suite charts: bar rows, one per (bench, device). Bars are absolute
+                    within the chart, not normalized -- direct cross-host
+                    comparison via the Scores table.
+  All measurements: detailed sortable-looking table (no JS sort, just
+                    CSS hover) with id, name, device, metric, value,
+                    seconds, iters, note.
+
+8. Remote (--remote)
+--------------------
+
+  - SSH alias from ~/.ssh/config; passwordless ssh required.
+  - Remote layout: $HOME/mishabench/{mishabench-tool/,results/<runid>/}.
+  - Steps: ssh mkdir; rsync source; ensure uv (auto-install if missing);
+    `uv sync --extra dev [--extra gpu]`; `uv run python -m src run ...`
+    streamed live; rsync results back to ./results/<host>-<runid>/.
+  - Excluded from rsync: .venv, __pycache__, .pytest_cache, .ruff_cache,
+    *.egg-info, dist, build, uv.lock (remote resolves its own), .git,
+    results/, .mishabench-cache/, *.parquet.
+
+9. CLI contract
+---------------
+
+  ./mishabench info                       -- system probe one-liner + power source disclosure
+  ./mishabench list [--suites SUITES]     -- enumerate benches with expected runtimes
+  ./mishabench run [opts]                 -- run + write report
+      --suites data,cv,llm        comma list, default all
+      --quick / -q                5-min budget + 10x smaller workloads
+      --no-cuda                   skip CUDA benches even with GPU present
+      --no-mps                    skip MPS benches
+      --output / -o DIR           output dir, default "results"
+      --label / -l KEY=VALUE      repeatable; tags appear in report header
+      --remote / -r HOST          SSH alias; rsync + run + fetch
+      --gpu                       (with --remote) install gpu extra remotely
+  ./mishabench report DIR                 -- regenerate report.html from a results dir
+
+  Wrapper-only verbs: install / test / lint / fmt / shell / clean / help.

@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+
+# Virtual envs
+.venv/
+venv/
+
+# Test / lint / type-checker caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Bench outputs (results, downloaded models, scratch data)
+results/
+.mishabench-cache/
+*.parquet
+*.html.gz
+
+# Don't ignore canonical example reports if/when we add them
+!docs/examples/*.html
+
+# Secrets -- never commit credential files even if a user puts them in
+# the project dir by mistake.
+.env
+.env.*
+!.env.example
+*.creds
+.creds

@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mikhail Yurasov
+# SPDX-License-Identifier: Apache-2.0
+#
+# MishaBench -- single-entry helper for both the bench CLI and the
+# project's dev workflow. The first argument selects the mode:
+#
+#   ./mishabench install [--force] [--gpu]   # ensure venv + deps (idempotent)
+#   ./mishabench test    [args...]           # run pytest (auto-installs first)
+#   ./mishabench lint    [args...]           # run ruff check (auto-installs first)
+#   ./mishabench fmt                         # run ruff check --fix + ruff format
+#   ./mishabench shell                       # drop into a venv-activated subshell
+#   ./mishabench clean                       # remove .venv + lint/test caches
+#   ./mishabench help                        # show this help text
+#
+# Anything else is forwarded to the MishaBench Python CLI:
+#
+#   ./mishabench info                        # print system probe (cpu, ram, gpu, cuda)
+#   ./mishabench list                        # list every benchmark
+#   ./mishabench run                         # run all suites locally
+#   ./mishabench run --quick                 # ~5-min smoke version of every suite
+#   ./mishabench run --suites data,cv        # subset
+#   ./mishabench run --remote <ssh-host>     # rsync + run on remote, fetch report back
+#   ./mishabench report <results-dir>        # rebuild HTML from a results directory
+#
+# Auto-install: every subcommand bootstraps the venv on first use.
+# Subsequent runs skip the bootstrap unless pyproject.toml is newer
+# than the install stamp (or you pass --force to install).
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+
+PYTHON_VERSION="${MISHABENCH_PYTHON:-3.12}"
+VENV_DIR=".venv"
+INSTALL_STAMP="$VENV_DIR/.mishabench-installed"
+GPU_STAMP="$VENV_DIR/.mishabench-gpu"
+
+color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
+log()   { color "1;36" "[mishabench] "; echo "$@"; }
+warn()  { color "1;33" "[mishabench] "; echo "$@" >&2; }
+die()   { color "1;31" "[mishabench] "; echo "$@" >&2; exit 1; }
+
+require_uv() {
+  if ! command -v uv >/dev/null 2>&1; then
+    die "uv is required (https://docs.astral.sh/uv/). Install with:
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+or, on macOS, 'brew install uv'."
+  fi
+}
+
+ensure_venv() {
+  if [ ! -d "$VENV_DIR" ]; then
+    log "creating $VENV_DIR (Python $PYTHON_VERSION via uv)"
+    uv venv --python "$PYTHON_VERSION" "$VENV_DIR" >/dev/null
+  fi
+}
+
+deps_ready() {
+  [ -x "$VENV_DIR/bin/python" ] || return 1
+  [ -x "$VENV_DIR/bin/pytest" ] || return 1
+  [ -x "$VENV_DIR/bin/ruff" ] || return 1
+  "$VENV_DIR/bin/python" -c "import typer, rich, yaml, numpy, pandas, polars, torch" >/dev/null 2>&1 || return 1
+}
+
+sync_deps() {
+  log "syncing dependencies (uv sync --extra dev)"
+  if uv sync --extra dev --quiet && deps_ready; then
+    touch "$INSTALL_STAMP"
+  else
+    warn "dependency sync failed or incomplete; recreating $VENV_DIR and retrying"
+    rm -rf "$VENV_DIR"
+    ensure_venv
+    uv sync --extra dev --quiet
+    deps_ready || die "dependency sync finished but venv is incomplete; try ./mishabench clean && ./mishabench install"
+    touch "$INSTALL_STAMP"
+  fi
+
+  # GPU extras (RAPIDS) are installed out-of-band: cudf-cu12 / cupy-cuda12x
+  # ship as nvidia-stub placeholders that fail metadata resolution on
+  # macOS, so we keep them out of pyproject.toml (where `uv sync` would
+  # try to resolve all extras) and install them directly into the venv
+  # only when the user opts in via `./mishabench install --gpu`.
+  if [ -f "$GPU_STAMP" ]; then
+    log "installing gpu extras (cudf-cu12 + cupy-cuda12x from pypi.nvidia.com)"
+    if ! uv pip install --extra-index-url https://pypi.nvidia.com \
+                        cudf-cu12 cupy-cuda12x --quiet; then
+      warn "gpu extras failed to install; cudf/cupy benches will be skipped at run time"
+      warn "(this is expected on non-Linux or non-CUDA hosts; remove $GPU_STAMP to drop the marker)"
+    fi
+  fi
+}
+
+ensure_deps() {
+  local force="${1:-}"
+  if [ "$force" = "--force" ] || \
+     [ ! -f "$INSTALL_STAMP" ] || \
+     [ "pyproject.toml" -nt "$INSTALL_STAMP" ] || \
+     ! deps_ready; then
+    sync_deps
+  fi
+}
+
+bootstrap() {
+  local force="${1:-}"
+  require_uv
+  ensure_venv
+  ensure_deps "$force"
+}
+
+show_help() {
+  # Print the comment block at the top of this script, stripping the
+  # leading '# ' so it reads as plain text.
+  sed -n '5,30p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+run_cli() {
+  bootstrap
+  # PYTHONPATH=$HERE makes `src` importable as a package, so `python -m
+  # src` resolves to src/__main__.py. We avoid editable installs (which
+  # need a setuptools .pth shim that some cloud-synced filesystems mark
+  # hidden, breaking Python 3.12.13+'s import machinery).
+  PYTHONPATH="$HERE" exec "$VENV_DIR/bin/python" -m src "$@"
+}
+
+main() {
+  if [ $# -eq 0 ]; then
+    show_help
+    echo
+    bootstrap
+    PYTHONPATH="$HERE" "$VENV_DIR/bin/python" -m src --help
+    exit 0
+  fi
+
+  cmd="$1"
+
+  case "$cmd" in
+    install)
+      shift
+      # Allow `--gpu` anywhere in the remaining args; sets a sticky stamp
+      # so subsequent sync_deps calls keep the gpu extra in.
+      for a in "$@"; do
+        if [ "$a" = "--gpu" ]; then
+          ensure_venv
+          touch "$GPU_STAMP"
+          log "gpu extras enabled (cudf-cu12 + cupy-cuda12x); will be included on every sync"
+        fi
+      done
+      # Accept either --force or --gpu as the leading arg for the bootstrap force-flag check
+      bootstrap "${1:-}"
+      log "ready: $VENV_DIR + dependencies"
+      ;;
+    test|tests)
+      shift
+      bootstrap
+      PYTHONPATH="$HERE" exec "$VENV_DIR/bin/pytest" "$@"
+      ;;
+    lint)
+      shift
+      bootstrap
+      exec "$VENV_DIR/bin/ruff" check src/ tests/ "$@"
+      ;;
+    fmt|format)
+      shift
+      bootstrap
+      "$VENV_DIR/bin/ruff" check --fix src/ tests/
+      "$VENV_DIR/bin/ruff" format src/ tests/ 2>/dev/null || true
+      ;;
+    shell)
+      bootstrap
+      log "entering venv-activated subshell -- type 'exit' to leave"
+      exec "${SHELL:-/bin/bash}" -i -c "
+        source '$VENV_DIR/bin/activate'
+        export PYTHONPATH='$HERE'
+        exec '${SHELL:-/bin/bash}' -i
+      "
+      ;;
+    clean)
+      log "removing $VENV_DIR, .pytest_cache, .ruff_cache, **/__pycache__"
+      rm -rf "$VENV_DIR" .pytest_cache .ruff_cache .mypy_cache
+      find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+      ;;
+    help|-h|--help)
+      show_help
+      ;;
+    *)
+      run_cli "$@"
+      ;;
+  esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
