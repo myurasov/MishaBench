@@ -36,13 +36,22 @@ form; the default is "all three".
   D1 csv_parse        Parse a synthetic 5M-row CSV (~150 MiB), sum two
                       numeric columns. Reported as MiB/s parsed.
   D2 group_aggregate  groupby on 5M rows, 1024 groups, multi-agg
-                      (sum, mean, max, count). Reported as M rows / s.
+                      (sum, mean, max, count). Reported as M rows/s.
   D3 join             5M-row left-join with 500k-row dim table on
-                      integer key. Reported as M rows joined.
+                      integer key. Reported as M rows/s.
   D4 parquet_round    Snappy parquet write+read of 5M rows. Reported as
-                      MiB round-tripped.
+                      MiB/s round-trip (= 2 * file_size / wall_seconds,
+                      since the bench writes once and reads once).
   D5 string_ops       Regex extract + uppercase over 1M strings shaped
-                      like 'abc-1234@host42.example'. Reported as M rows.
+                      like 'abc-1234@host42.example'. Reported as M rows/s.
+
+  Each bench captures the work-size (file MiB or row count) before the
+  timed window, then times the actual operation with `time.perf_counter`
+  and reports `work_size / elapsed` as the value -- i.e. real
+  throughput, not workload size. Frame setup (`pl.from_pandas`,
+  `cudf.from_pandas`) is excluded from the timed window: it's the
+  equivalent of pandas already having the frame in RAM, and we want to
+  measure the operation, not the data prep.
 
   Variants per workload: pandas (cpu), polars (cpu), cudf (cuda) where
   available. cudf paths are skipped with a clear reason on macOS / on

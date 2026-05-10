@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import string
 import tempfile
+import time as _time
 from pathlib import Path
 from typing import Any
 
@@ -88,34 +89,40 @@ def _csv_path_for(cfg: BenchConfig) -> Path:
 def bench_csv_pandas(cfg: BenchConfig):
     import pandas as pd
     p = _csv_path_for(cfg)
-    df = pd.read_csv(p)
-    rows = len(df)
-    _ = float(df["x"].sum()) + float(df["y"].sum())
     mb = p.stat().st_size / 2**20
-    return ("throughput", round(mb, 2), "MiB/s parsed (single shot)",
-            {"rows": rows, "file_mib": round(mb, 2)})
+    t0 = _time.perf_counter()
+    df = pd.read_csv(p)
+    _ = float(df["x"].sum()) + float(df["y"].sum())
+    sec = _time.perf_counter() - t0
+    rate = mb / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 2), "MiB/s parsed",
+            {"rows": len(df), "file_mib": round(mb, 2), "seconds": round(sec, 4)})
 
 
 def bench_csv_polars(cfg: BenchConfig):
     import polars as pl
     p = _csv_path_for(cfg)
-    df = pl.read_csv(p)
-    rows = df.height
-    _ = float(df["x"].sum()) + float(df["y"].sum())
     mb = p.stat().st_size / 2**20
-    return ("throughput", round(mb, 2), "MiB/s parsed (single shot)",
-            {"rows": rows, "file_mib": round(mb, 2)})
+    t0 = _time.perf_counter()
+    df = pl.read_csv(p)
+    _ = float(df["x"].sum()) + float(df["y"].sum())
+    sec = _time.perf_counter() - t0
+    rate = mb / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 2), "MiB/s parsed",
+            {"rows": df.height, "file_mib": round(mb, 2), "seconds": round(sec, 4)})
 
 
 def bench_csv_cudf(cfg: BenchConfig):
     import cudf  # type: ignore[import-not-found]
     p = _csv_path_for(cfg)
-    df = cudf.read_csv(p)
-    rows = len(df)
-    _ = float(df["x"].sum()) + float(df["y"].sum())
     mb = p.stat().st_size / 2**20
-    return ("throughput", round(mb, 2), "MiB/s parsed (single shot)",
-            {"rows": rows, "file_mib": round(mb, 2)})
+    t0 = _time.perf_counter()
+    df = cudf.read_csv(p)
+    _ = float(df["x"].sum()) + float(df["y"].sum())
+    sec = _time.perf_counter() - t0
+    rate = mb / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 2), "MiB/s parsed",
+            {"rows": len(df), "file_mib": round(mb, 2), "seconds": round(sec, 4)})
 
 
 # ---------- D2: group-by aggregate ----------
@@ -129,36 +136,54 @@ def _frame_pandas(cfg: BenchConfig):
 
 def bench_groupby_pandas(cfg: BenchConfig):
     df = _frame_pandas(cfg)
+    rows_m = len(df) / 1e6
+    t0 = _time.perf_counter()
     out = df.groupby("group", sort=False).agg(
         x_sum=("x", "sum"),
         x_mean=("x", "mean"),
         y_max=("y", "max"),
         n=("id", "size"),
     )
-    return ("throughput", round(len(df) / 1e6, 3), "M rows aggregated",
-            {"groups_out": len(out)})
+    sec = _time.perf_counter() - t0
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s aggregated",
+            {"groups_out": len(out), "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 def bench_groupby_polars(cfg: BenchConfig):
     import polars as pl
+    # Frame conversion is excluded from the timed window: it's the equivalent
+    # of pandas already having the frame in RAM. Time only the actual op.
     df = pl.from_pandas(_frame_pandas(cfg))
+    rows_m = df.height / 1e6
+    t0 = _time.perf_counter()
     out = df.group_by("group").agg(
         pl.col("x").sum().alias("x_sum"),
         pl.col("x").mean().alias("x_mean"),
         pl.col("y").max().alias("y_max"),
         pl.col("id").count().alias("n"),
     )
-    return ("throughput", round(df.height / 1e6, 3), "M rows aggregated",
-            {"groups_out": out.height})
+    sec = _time.perf_counter() - t0
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s aggregated",
+            {"groups_out": out.height, "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 def bench_groupby_cudf(cfg: BenchConfig):
     import cudf  # type: ignore[import-not-found]
+    # Host->device transfer is excluded from the timed window for the same
+    # reason polars's from_pandas is excluded above: time the operation,
+    # not the data setup. cudf operations are synchronous so perf_counter
+    # accurately captures kernel time without manual cuda-sync.
     pdf = _frame_pandas(cfg)
     df = cudf.from_pandas(pdf)
+    rows_m = len(df) / 1e6
+    t0 = _time.perf_counter()
     out = df.groupby("group").agg({"x": ["sum", "mean"], "y": "max", "id": "count"})
-    return ("throughput", round(len(df) / 1e6, 3), "M rows aggregated",
-            {"groups_out": len(out)})
+    sec = _time.perf_counter() - t0
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s aggregated",
+            {"groups_out": len(out), "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 # ---------- D3: join ----------
@@ -178,42 +203,65 @@ def _dim_pandas(cfg: BenchConfig):
 def bench_join_pandas(cfg: BenchConfig):
     left = _frame_pandas(cfg)[["id", "x"]]
     right = _dim_pandas(cfg)
+    t0 = _time.perf_counter()
     merged = left.merge(right, on="id", how="left")
-    n = len(merged)
-    return ("throughput", round(n / 1e6, 3), "M rows joined",
-            {"left_rows": len(left), "right_rows": len(right)})
+    sec = _time.perf_counter() - t0
+    rows_m = len(merged) / 1e6
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s joined",
+            {"left_rows": len(left), "right_rows": len(right),
+             "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 def bench_join_polars(cfg: BenchConfig):
     import polars as pl
     left = pl.from_pandas(_frame_pandas(cfg).loc[:, ["id", "x"]])
     right = pl.from_pandas(_dim_pandas(cfg))
+    t0 = _time.perf_counter()
     merged = left.join(right, on="id", how="left")
-    return ("throughput", round(merged.height / 1e6, 3), "M rows joined",
-            {"left_rows": left.height, "right_rows": right.height})
+    sec = _time.perf_counter() - t0
+    rows_m = merged.height / 1e6
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s joined",
+            {"left_rows": left.height, "right_rows": right.height,
+             "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 def bench_join_cudf(cfg: BenchConfig):
     import cudf  # type: ignore[import-not-found]
     left = cudf.from_pandas(_frame_pandas(cfg).loc[:, ["id", "x"]])
     right = cudf.from_pandas(_dim_pandas(cfg))
+    t0 = _time.perf_counter()
     merged = left.merge(right, on="id", how="left")
-    return ("throughput", round(len(merged) / 1e6, 3), "M rows joined",
-            {"left_rows": len(left), "right_rows": len(right)})
+    sec = _time.perf_counter() - t0
+    rows_m = len(merged) / 1e6
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s joined",
+            {"left_rows": len(left), "right_rows": len(right),
+             "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 # ---------- D4: parquet round-trip ----------
 
 def bench_parquet_pandas(cfg: BenchConfig):
+    import pandas as pd
     df = _frame_pandas(cfg)
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
         path = Path(f.name)
     try:
+        t0 = _time.perf_counter()
         df.to_parquet(path, compression="snappy")
-        df2 = __import__("pandas").read_parquet(path)
+        df2 = pd.read_parquet(path)
+        sec = _time.perf_counter() - t0
         size_mib = path.stat().st_size / 2**20
-        return ("throughput", round(size_mib, 2), "MiB round-trip",
-                {"rows": len(df2), "file_mib": round(size_mib, 2)})
+        # Round-trip throughput: file size both written and read once each,
+        # so effective bytes processed = 2 * file_size. Reported as
+        # "round-trip MiB/s" so a higher number is better and the metric
+        # composes with the geomean cleanly.
+        rate = (2 * size_mib) / sec if sec > 0 else 0.0
+        return ("throughput", round(rate, 2), "MiB/s round-trip",
+                {"rows": len(df2), "file_mib": round(size_mib, 2),
+                 "seconds": round(sec, 4)})
     finally:
         path.unlink(missing_ok=True)
 
@@ -224,11 +272,15 @@ def bench_parquet_polars(cfg: BenchConfig):
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
         path = Path(f.name)
     try:
+        t0 = _time.perf_counter()
         df.write_parquet(path, compression="snappy")
         df2 = pl.read_parquet(path)
+        sec = _time.perf_counter() - t0
         size_mib = path.stat().st_size / 2**20
-        return ("throughput", round(size_mib, 2), "MiB round-trip",
-                {"rows": df2.height, "file_mib": round(size_mib, 2)})
+        rate = (2 * size_mib) / sec if sec > 0 else 0.0
+        return ("throughput", round(rate, 2), "MiB/s round-trip",
+                {"rows": df2.height, "file_mib": round(size_mib, 2),
+                 "seconds": round(sec, 4)})
     finally:
         path.unlink(missing_ok=True)
 
@@ -244,23 +296,33 @@ def _strings_pandas(cfg: BenchConfig):
 
 def bench_regex_pandas(cfg: BenchConfig):
     df = _strings_pandas(cfg)
+    rows_m = len(df) / 1e6
+    t0 = _time.perf_counter()
     extracted = df["line"].str.extract(r"^([a-z]+)-(\d+)@host(\d+)\.")
     upper = df["line"].str.upper()
-    return ("throughput", round(len(df) / 1e6, 3), "M rows regex+upper",
-            {"first_unique": int(extracted[0].nunique()), "n_upper": len(upper)})
+    sec = _time.perf_counter() - t0
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s regex+upper",
+            {"first_unique": int(extracted[0].nunique()), "n_upper": len(upper),
+             "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 def bench_regex_polars(cfg: BenchConfig):
     import polars as pl
     df = pl.from_pandas(_strings_pandas(cfg))
+    rows_m = df.height / 1e6
+    t0 = _time.perf_counter()
     extracted = df.select(
         pl.col("line").str.extract(r"^([a-z]+)-(\d+)@host(\d+)\.", 1).alias("g1"),
         pl.col("line").str.extract(r"^([a-z]+)-(\d+)@host(\d+)\.", 2).alias("g2"),
         pl.col("line").str.extract(r"^([a-z]+)-(\d+)@host(\d+)\.", 3).alias("g3"),
     )
     upper = df.select(pl.col("line").str.to_uppercase())
-    return ("throughput", round(df.height / 1e6, 3), "M rows regex+upper",
-            {"first_unique": extracted["g1"].n_unique(), "n_upper": upper.height})
+    sec = _time.perf_counter() - t0
+    rate = rows_m / sec if sec > 0 else 0.0
+    return ("throughput", round(rate, 3), "M rows/s regex+upper",
+            {"first_unique": extracted["g1"].n_unique(), "n_upper": upper.height,
+             "rows_m": round(rows_m, 3), "seconds": round(sec, 4)})
 
 
 # ---------- registration ----------

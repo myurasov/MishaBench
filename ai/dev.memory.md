@@ -27,6 +27,12 @@ Accumulated maintainer preferences. Each entry is a hard rule unless explicitly 
 - **`/sys/class/powercap/intel-rapl:N/energy_uj` is mode 0400 by default** on most distros after CVE-2020-8694 ("platypus" attack). The probe detects this and surfaces a `rapl_status="permission_denied"` + a one-line `sudo chmod a+r /sys/class/powercap/intel-rapl*/energy_uj` hint in the report's System section. We do NOT auto-chmod -- it requires root and we don't ask for sudo at probe time.
 - **AMD CPUs on recent kernels** expose RAPL via the same `intel-rapl:N` interface (confusingly named); the same probe path works. Older AMD-only paths (`/sys/class/hwmon/hwmonN/energy*_input` for k10temp) aren't covered yet -- file an issue if you hit a host where they're the only source.
 
+## Bench return values
+
+- **`value` MUST be throughput (work / second), never workload size.** Returning workload size makes the score identical across hosts (every host runs the same workload), defeating the point of cross-host comparison. Each bench captures the work-size BEFORE the timed window, runs `t0 = time.perf_counter()` around the actual operation, then returns `work_size / elapsed` as the value with a per-second unit (`MiB/s`, `M rows/s`, `img/s`, `tok/s`, `GFLOPS`). The runner records overall wall time separately in `BenchResult.seconds`; the bench's internal `seconds` (in `notes`) excludes setup like cached-frame conversions.
+- **Setup is excluded from the timed window.** `pl.from_pandas(...)` and `cudf.from_pandas(...)` count as data prep, not the operation under test. They run before `t0`. For pandas, the cached `_FRAMES[...]` is already in RAM at the moment the bench starts; the polars/cudf timing should match that "data is in the right place" assumption.
+- **CUDA / cudf timing**: cudf operations are eager (synchronous), so `time.perf_counter` around them captures real kernel time without manual `cuda.synchronize()`. For torch CUDA tensors, an explicit `torch.cuda.synchronize()` immediately before the stop-clock is mandatory (cv / llm benches already do this).
+
 ## Gotchas
 
 - **First-run model downloads count against the budget.** TinyLlama (~2.2 GiB), MiniLM (~80 MiB), DINOv2 (~85 MiB), ResNet-50 (~100 MiB), EfficientNet-B0 (~20 MiB). On a slow link this can eat 10-15 minutes of the 60-min budget. Quick-mode runs the same downloads but uses smaller workloads -- the model size is the model size.
