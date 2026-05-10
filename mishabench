@@ -62,6 +62,26 @@ deps_ready() {
   [ -x "$VENV_DIR/bin/pytest" ] || return 1
   [ -x "$VENV_DIR/bin/ruff" ] || return 1
   "$VENV_DIR/bin/python" -c "import typer, rich, yaml, numpy, pandas, polars, torch" >/dev/null 2>&1 || return 1
+  # When the user opted into GPU extras (sticky stamp), also require
+  # cudf + cupy. A `uv sync --extra dev` doesn't preserve out-of-band
+  # `uv pip install` packages (cudf-cu12, cupy-cuda12x ship outside
+  # the project's lockfile), so cudf can vanish silently after any
+  # sync. Without this check, the wrapper would mistake a cudf-less
+  # venv for "deps ready" and skip the gpu_extras_install step.
+  if [ -f "$GPU_STAMP" ]; then
+    "$VENV_DIR/bin/python" -c "import cudf, cupy" >/dev/null 2>&1 || return 1
+  fi
+}
+
+gpu_extras_install() {
+  log "installing gpu extras (cudf-cu12 + cupy-cuda12x from pypi.nvidia.com) -- live progress follows"
+  if ! uv pip install --extra-index-url https://pypi.nvidia.com \
+                      cudf-cu12 cupy-cuda12x; then
+    warn "gpu extras failed to install; cudf/cupy benches will be skipped at run time"
+    warn "(this is expected on non-Linux or non-CUDA hosts; remove $GPU_STAMP to drop the marker)"
+    return 1
+  fi
+  return 0
 }
 
 sync_deps() {
@@ -90,12 +110,7 @@ sync_deps() {
   # try to resolve all extras) and install them directly into the venv
   # only when the user opts in via `./mishabench install --gpu`.
   if [ -f "$GPU_STAMP" ]; then
-    log "installing gpu extras (cudf-cu12 + cupy-cuda12x from pypi.nvidia.com) -- live progress follows"
-    if ! uv pip install --extra-index-url https://pypi.nvidia.com \
-                        cudf-cu12 cupy-cuda12x; then
-      warn "gpu extras failed to install; cudf/cupy benches will be skipped at run time"
-      warn "(this is expected on non-Linux or non-CUDA hosts; remove $GPU_STAMP to drop the marker)"
-    fi
+    gpu_extras_install || true
   fi
 }
 
@@ -190,6 +205,30 @@ show_help() {
 
 run_cli() {
   bootstrap
+  # If --gpu is passed to a LOCAL run (no --remote), treat it as an
+  # implicit `install --gpu` for this venv. The Python CLI's --gpu
+  # flag is otherwise only honoured by the --remote driver, so the
+  # naive `./mishabench run --gpu` would silently do nothing about
+  # cudf. With --remote present we leave the local venv alone -- the
+  # remote side does its own install.
+  has_gpu=""
+  has_remote=""
+  for a in "$@"; do
+    case "$a" in
+      --gpu)        has_gpu="1" ;;
+      --remote|-r)  has_remote="1" ;;
+    esac
+  done
+  if [ -n "$has_gpu" ] && [ -z "$has_remote" ]; then
+    if [ ! -f "$GPU_STAMP" ]; then
+      ensure_venv
+      touch "$GPU_STAMP"
+      log "--gpu requested for local run -- marking gpu extras sticky on this venv"
+    fi
+    if ! "$VENV_DIR/bin/python" -c "import cudf, cupy" >/dev/null 2>&1; then
+      gpu_extras_install || true
+    fi
+  fi
   # PYTHONPATH=$HERE makes `src` importable as a package, so `python -m
   # src` resolves to src/__main__.py. We avoid editable installs (which
   # need a setuptools .pth shim that some cloud-synced filesystems mark
@@ -211,17 +250,34 @@ main() {
   case "$cmd" in
     install)
       shift
-      # Allow `--gpu` anywhere in the remaining args; sets a sticky stamp
-      # so subsequent sync_deps calls keep the gpu extra in.
+      # Parse args: --gpu sets the sticky stamp (so future syncs include
+      # the gpu install step); --force forwards to bootstrap to force a
+      # full reinstall even if the venv looks fresh.
+      gpu_requested=""
+      force_arg=""
       for a in "$@"; do
-        if [ "$a" = "--gpu" ]; then
-          ensure_venv
-          touch "$GPU_STAMP"
-          log "gpu extras enabled (cudf-cu12 + cupy-cuda12x); will be included on every sync"
-        fi
+        case "$a" in
+          --gpu)   gpu_requested="1" ;;
+          --force) force_arg="--force" ;;
+        esac
       done
-      # Accept either --force or --gpu as the leading arg for the bootstrap force-flag check
-      bootstrap "${1:-}"
+      if [ -n "$gpu_requested" ]; then
+        ensure_venv
+        touch "$GPU_STAMP"
+        log "gpu extras enabled (cudf-cu12 + cupy-cuda12x sticky on this venv)"
+      fi
+      bootstrap "$force_arg"
+      # If --gpu was passed AND deps_ready already returned OK without
+      # triggering sync_deps (so gpu_extras_install never ran in
+      # sync_deps), force the gpu install here. Idempotent -- uv pip
+      # install is fast when the packages are already present.
+      if [ -n "$gpu_requested" ]; then
+        if "$VENV_DIR/bin/python" -c "import cudf, cupy" >/dev/null 2>&1; then
+          log "gpu extras already present (cudf + cupy importable)"
+        else
+          gpu_extras_install || true
+        fi
+      fi
       log "ready: $VENV_DIR + dependencies"
       ;;
     test|tests)

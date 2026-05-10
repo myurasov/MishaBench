@@ -6,14 +6,21 @@
 Workloads:
   D1 csv_parse        -- read a synthetic CSV, sum a numeric column
   D2 group_aggregate  -- groupby + multi-agg on a synthetic frame
-  D3 join             -- left-join 5M-row driving table with 500k-row dim
+  D3 join             -- left-join 100M-row driving table with 10M-row dim
   D4 parquet_round    -- write + read a synthetic parquet (with snappy)
-  D5 string_ops       -- regex extract + lower over a 1M-row string column
+  D5 string_ops       -- regex extract + uppercase over a 5M-row string column
 
-Sizes scale by 10x between `--quick` (smoke) and the default budget so
-the suite stays under ~12 min on a modest CPU laptop. cudf paths run
-the same logic against cudf for an apples-to-apples comparison; if
-cudf is missing the bench records `ok=False` with a clear reason.
+Sizes are deliberately big: the main pandas frame at 100M rows is
+~2.1 GB in RAM; the polars and cudf copies bring the working set to
+~5-6 GB during the join bench. This makes the suite sensitive to
+memory bandwidth + compute, not just per-row Python overhead. Skips
+gracefully on hosts that don't have the headroom (the runner records
+the OOM and continues).
+
+Quick mode (`--quick`) shrinks every workload by 10x so a smoke pass
+runs in ~5 minutes on a modest CPU laptop. cudf paths run the same
+logic against cudf for an apples-to-apples comparison; if cudf is
+missing the bench records `ok=False` with a clear reason.
 """
 
 from __future__ import annotations
@@ -70,9 +77,13 @@ def _build_csv(path: Path, df: Any) -> int:
 
 
 def _sizes(quick: bool) -> dict[str, int]:
+    # Full mode: main frame is ~2.1 GB pandas (100M rows x 21 bytes/row),
+    # dim is ~80 MB, strings is ~400 MB. Polars and cudf each materialise
+    # their own copy on demand, so peak working set during the join bench
+    # is ~5-6 GB across the three frames.
     if quick:
-        return {"main": 500_000, "dim": 50_000, "strings": 100_000}
-    return {"main": 5_000_000, "dim": 500_000, "strings": 1_000_000}
+        return {"main": 10_000_000, "dim": 1_000_000, "strings": 500_000}
+    return {"main": 100_000_000, "dim": 10_000_000, "strings": 5_000_000}
 
 
 # ---------- D1: CSV parse ----------
@@ -327,24 +338,25 @@ def bench_regex_polars(cfg: BenchConfig):
 
 # ---------- registration ----------
 
-# expected_seconds is conservative (CPU laptop estimate). If the bench
-# finishes faster on a beefy box, that's fine; the budget guard only
-# uses it to *skip* benches we know won't fit in the remaining budget.
+# expected_seconds is conservative (CPU laptop estimate at full size,
+# 100M-row main frame). The budget guard only uses these to *skip* a
+# bench when not enough wall time remains. Tuned upward from the prior
+# 5M-row workload sizes -- the new full-mode sizes are 20x larger.
 
-register(Bench("data.csv.pandas", "data", "CSV parse", "cpu", bench_csv_pandas, expected_seconds=30))
-register(Bench("data.csv.polars", "data", "CSV parse", "cpu", bench_csv_polars, expected_seconds=15))
-register(Bench("data.csv.cudf",   "data", "CSV parse", "cuda", bench_csv_cudf, requires=("cuda", "cudf"), expected_seconds=15))
+register(Bench("data.csv.pandas", "data", "CSV parse", "cpu", bench_csv_pandas, expected_seconds=120))
+register(Bench("data.csv.polars", "data", "CSV parse", "cpu", bench_csv_polars, expected_seconds=20))
+register(Bench("data.csv.cudf",   "data", "CSV parse", "cuda", bench_csv_cudf, requires=("cuda", "cudf"), expected_seconds=20))
 
-register(Bench("data.gb.pandas",  "data", "Group-by aggregate", "cpu", bench_groupby_pandas, expected_seconds=15))
-register(Bench("data.gb.polars",  "data", "Group-by aggregate", "cpu", bench_groupby_polars, expected_seconds=10))
-register(Bench("data.gb.cudf",    "data", "Group-by aggregate", "cuda", bench_groupby_cudf, requires=("cuda", "cudf"), expected_seconds=10))
+register(Bench("data.gb.pandas",  "data", "Group-by aggregate", "cpu", bench_groupby_pandas, expected_seconds=30))
+register(Bench("data.gb.polars",  "data", "Group-by aggregate", "cpu", bench_groupby_polars, expected_seconds=15))
+register(Bench("data.gb.cudf",    "data", "Group-by aggregate", "cuda", bench_groupby_cudf, requires=("cuda", "cudf"), expected_seconds=15))
 
-register(Bench("data.join.pandas","data", "Left join", "cpu", bench_join_pandas, expected_seconds=20))
-register(Bench("data.join.polars","data", "Left join", "cpu", bench_join_polars, expected_seconds=10))
-register(Bench("data.join.cudf",  "data", "Left join", "cuda", bench_join_cudf, requires=("cuda", "cudf"), expected_seconds=10))
+register(Bench("data.join.pandas","data", "Left join", "cpu", bench_join_pandas, expected_seconds=120))
+register(Bench("data.join.polars","data", "Left join", "cpu", bench_join_polars, expected_seconds=45))
+register(Bench("data.join.cudf",  "data", "Left join", "cuda", bench_join_cudf, requires=("cuda", "cudf"), expected_seconds=30))
 
-register(Bench("data.pq.pandas",  "data", "Parquet round-trip", "cpu", bench_parquet_pandas, expected_seconds=20))
-register(Bench("data.pq.polars",  "data", "Parquet round-trip", "cpu", bench_parquet_polars, expected_seconds=15))
+register(Bench("data.pq.pandas",  "data", "Parquet round-trip", "cpu", bench_parquet_pandas, expected_seconds=90))
+register(Bench("data.pq.polars",  "data", "Parquet round-trip", "cpu", bench_parquet_polars, expected_seconds=30))
 
-register(Bench("data.regex.pandas","data", "Regex + uppercase", "cpu", bench_regex_pandas, expected_seconds=30))
+register(Bench("data.regex.pandas","data", "Regex + uppercase", "cpu", bench_regex_pandas, expected_seconds=120))
 register(Bench("data.regex.polars","data", "Regex + uppercase", "cpu", bench_regex_polars, expected_seconds=15))

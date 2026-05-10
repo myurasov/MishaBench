@@ -53,6 +53,8 @@ dependencies = [
     "tiktoken>=0.7",
     "huggingface-hub>=0.23",
     "psutil>=5.9",
+    "scipy>=1.11",          # FFT bench in the compute suite
+    "threadpoolctl>=3.2",   # forces 1 BLAS thread for the single-thread compute benches
 ]
 
 [project.optional-dependencies]

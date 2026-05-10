@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-ALL_SUITES: tuple[str, ...] = ("data", "cv", "llm")
+ALL_SUITES: tuple[str, ...] = ("data", "cv", "llm", "compute")
 
 
 QUICK_BUDGET_S: float = 5 * 60.0    # 5-minute smoke run

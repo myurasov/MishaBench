@@ -211,6 +211,115 @@ def bench_decode_cuda(cfg: BenchConfig): return _bench_decode(cfg, "cuda")
 def bench_decode_mps(cfg: BenchConfig):  return _bench_decode(cfg, "mps")
 
 
+# ---------- L5 / L6: Qwen2.5-3B prefill + decode (LARGE LLM) ----------
+
+# Qwen2.5-3B-Instruct: 3B params, ~6 GB fp16. Public on HF, no token
+# needed. The same _load_llm cache keys this by model id, so the small
+# (TinyLlama) and large (Qwen) models coexist in memory if both run.
+
+QWEN_3B = "Qwen/Qwen2.5-3B-Instruct"
+
+
+def _bench_prefill_model(cfg: BenchConfig, device: str, model_id: str):
+    """Reusable prefill bench parameterised by model id. Same logic as
+    _bench_prefill but lets us run multiple model sizes side by side."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    seq = 256 if cfg.quick else 512
+    iters = 4 if cfg.quick else 8
+    cache = f"{model_id}-{device}"
+    if cache not in _LLM:
+        tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
+        if tok.pad_token is None and tok.eos_token is not None:
+            tok.pad_token = tok.eos_token
+        dtype = (torch.float16
+                 if device.startswith("cuda") or device == "mps"
+                 else torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype)
+        model.eval()
+        model = model.to(_torch_device(device))
+        _LLM[cache] = model
+        _TOK[cache] = tok
+    model, tok = _LLM[cache], _TOK[cache]
+    text = "The capital of France is Paris. " * 100
+    enc = tok(text, return_tensors="pt", truncation=True, max_length=seq)
+    input_ids = enc["input_ids"].to(_torch_device(device))
+    with torch.inference_mode():
+        _ = model(input_ids=input_ids)
+        if device.startswith("cuda"):
+            torch.cuda.synchronize()
+        elif device == "mps":
+            torch.mps.synchronize()
+    import time as _time
+    with torch.inference_mode():
+        t0 = _time.perf_counter()
+        for _ in range(iters):
+            _ = model(input_ids=input_ids)
+        if device.startswith("cuda"):
+            torch.cuda.synchronize()
+        elif device == "mps":
+            torch.mps.synchronize()
+        elapsed = _time.perf_counter() - t0
+    toks = iters * input_ids.shape[1]
+    tps = toks / elapsed if elapsed > 0 else 0.0
+    return ("throughput", round(tps, 1), "prefill tok/s",
+            {"seq": seq, "iters": iters, "model": model_id,
+             "seconds": round(elapsed, 4)})
+
+
+def _bench_decode_model(cfg: BenchConfig, device: str, model_id: str):
+    """Reusable decode bench parameterised by model id."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    new_tokens = 64 if cfg.quick else 128
+    cache = f"{model_id}-{device}"
+    if cache not in _LLM:
+        tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
+        if tok.pad_token is None and tok.eos_token is not None:
+            tok.pad_token = tok.eos_token
+        dtype = (torch.float16
+                 if device.startswith("cuda") or device == "mps"
+                 else torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype)
+        model.eval()
+        model = model.to(_torch_device(device))
+        _LLM[cache] = model
+        _TOK[cache] = tok
+    model, tok = _LLM[cache], _TOK[cache]
+    prompt = "Once upon a time, in a small village near the mountains,"
+    enc = tok(prompt, return_tensors="pt").to(_torch_device(device))
+    with torch.inference_mode():
+        _ = model.generate(**enc, max_new_tokens=8, do_sample=False,
+                           pad_token_id=tok.pad_token_id)
+        if device.startswith("cuda"):
+            torch.cuda.synchronize()
+        elif device == "mps":
+            torch.mps.synchronize()
+    import time as _time
+    with torch.inference_mode():
+        t0 = _time.perf_counter()
+        out = model.generate(**enc, max_new_tokens=new_tokens, do_sample=False,
+                             pad_token_id=tok.pad_token_id)
+        if device.startswith("cuda"):
+            torch.cuda.synchronize()
+        elif device == "mps":
+            torch.mps.synchronize()
+        elapsed = _time.perf_counter() - t0
+    generated = out.shape[1] - enc["input_ids"].shape[1]
+    tps = generated / elapsed if elapsed > 0 else 0.0
+    return ("throughput", round(tps, 2), "decode tok/s",
+            {"new_tokens": int(generated), "model": model_id,
+             "seconds": round(elapsed, 4)})
+
+
+def bench_prefill_qwen3b_cpu(cfg):  return _bench_prefill_model(cfg, "cpu", QWEN_3B)
+def bench_prefill_qwen3b_cuda(cfg): return _bench_prefill_model(cfg, "cuda", QWEN_3B)
+def bench_prefill_qwen3b_mps(cfg):  return _bench_prefill_model(cfg, "mps", QWEN_3B)
+def bench_decode_qwen3b_cpu(cfg):   return _bench_decode_model(cfg, "cpu", QWEN_3B)
+def bench_decode_qwen3b_cuda(cfg):  return _bench_decode_model(cfg, "cuda", QWEN_3B)
+def bench_decode_qwen3b_mps(cfg):   return _bench_decode_model(cfg, "mps", QWEN_3B)
+
+
 # ---------- registration ----------
 
 # CPU LLM benches are slow but worth running -- they establish the score
@@ -230,3 +339,15 @@ register(Bench("llm.prefill.mps",  "llm", "TinyLlama prefill",     "mps",  bench
 register(Bench("llm.decode.cpu",   "llm", "TinyLlama decode",      "cpu",  bench_decode_cpu, expected_seconds=180))
 register(Bench("llm.decode.cuda",  "llm", "TinyLlama decode",      "cuda", bench_decode_cuda, requires=("cuda",), expected_seconds=15))
 register(Bench("llm.decode.mps",   "llm", "TinyLlama decode",      "mps",  bench_decode_mps,  requires=("mps",), expected_seconds=60))
+
+# Large LLM: Qwen2.5-3B (~6 GB fp16). Skipped CPU on hosts with < 16 GB
+# free RAM not because the bench enforces it but because loading + a
+# single forward pass on CPU is genuinely slow (~10 min for prefill at
+# seq 512 on a Xeon E5; the per-bench budget guard typically skips it).
+register(Bench("llm.prefill_q3b.cpu",  "llm", "Qwen2.5-3B prefill",  "cpu",  bench_prefill_qwen3b_cpu,  expected_seconds=300))
+register(Bench("llm.prefill_q3b.cuda", "llm", "Qwen2.5-3B prefill",  "cuda", bench_prefill_qwen3b_cuda, requires=("cuda",), expected_seconds=30))
+register(Bench("llm.prefill_q3b.mps",  "llm", "Qwen2.5-3B prefill",  "mps",  bench_prefill_qwen3b_mps,  requires=("mps",), expected_seconds=120))
+
+register(Bench("llm.decode_q3b.cpu",   "llm", "Qwen2.5-3B decode",   "cpu",  bench_decode_qwen3b_cpu,   expected_seconds=480))
+register(Bench("llm.decode_q3b.cuda",  "llm", "Qwen2.5-3B decode",   "cuda", bench_decode_qwen3b_cuda,  requires=("cuda",), expected_seconds=30))
+register(Bench("llm.decode_q3b.mps",   "llm", "Qwen2.5-3B decode",   "mps",  bench_decode_qwen3b_mps,   requires=("mps",), expected_seconds=120))

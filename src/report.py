@@ -286,10 +286,17 @@ _SUITE_ORDER = ("data", "cv", "llm")
 
 
 def _scores_section(scores: ScoreReport) -> str:
-    """Top-level scores: rows are suites + total, columns are devices.
-    Each cell shows the suite/device score, with a tiny power line below
-    when wattage is known. Total row at the bottom is the headline number."""
-    devices = [d for d in _DEVICE_ORDER if d in scores.per_device_total]
+    """Top-level scores: rows are suites, columns are devices. Each cell
+    shows the suite/device score with a tiny power line below when
+    wattage is known.
+
+    No grand-total row -- a geomean across suites whose units differ by
+    orders of magnitude (M rows/s, img/s, tok/s, GFLOPS) is dimensionally
+    meaningless. The per-suite scores ARE meaningful (geomean within a
+    similar-unit family) and that's where the comparison stops."""
+    # Discover devices from per_device_per_suite (per_device_total is no
+    # longer populated; see scoring.py for why).
+    devices = [d for d in _DEVICE_ORDER if d in scores.per_device_per_suite]
     if not devices:
         return "<p class='note'>(no scoreable measurements)</p>"
 
@@ -299,6 +306,8 @@ def _scores_section(scores: ScoreReport) -> str:
 
     body_rows: list[str] = []
     for suite in _SUITE_ORDER:
+        if not any(suite in scores.per_device_per_suite.get(d, {}) for d in devices):
+            continue  # suite didn't run -- skip the row entirely
         cells: list[str] = [f"<td>{_esc(suite)}</td>"]
         for d in devices:
             ds = scores.per_device_per_suite.get(d, {}).get(suite)
@@ -314,23 +323,11 @@ def _scores_section(scores: ScoreReport) -> str:
             cells.append(f"<td class='num'>{ds.score:,.0f}{sub}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
 
-    total_cells: list[str] = ["<td>Total</td>"]
-    for d in devices:
-        ds = scores.per_device_total.get(d)
-        if ds is None or ds.score is None:
-            total_cells.append("<td class='num'>-</td>")
-            continue
-        est_cls = " est" if ds.estimated_power else ""
-        sub = ""
-        if ds.avg_watts is not None and ds.pts_per_watt is not None:
-            sub = (f"<span class='small{est_cls}'>"
-                   f"{ds.avg_watts:.1f} W -- {ds.pts_per_watt:.1f} pts/W"
-                   f"</span>")
-        total_cells.append(f"<td class='num'>{ds.score:,.0f}{sub}</td>")
-
-    body_rows.append("<tr class='total'>" + "".join(total_cells) + "</tr>")
-
-    has_estimated = any(s.estimated_power for s in scores.per_device_total.values())
+    has_estimated = any(
+        s.estimated_power
+        for d in scores.per_device_per_suite.values()
+        for s in d.values()
+    )
     note = ""
     if has_estimated:
         note = ("<p class='note'>* Power marked with a star is a chip-name TDP "
@@ -345,8 +342,10 @@ def _scores_section(scores: ScoreReport) -> str:
         + "</tbody></table>"
         + note
         + "<p class='note'>Score = geomean of per-bench raw values within a "
-          "(suite, device) cell, scaled by 1000. Total = geomean of suite "
-          "scores. Higher is better. pts/W = score / avg watts.</p>"
+          "(suite, device) cell, scaled by 1000. Higher is better. "
+          "pts/W = score / avg watts. No cross-suite total is reported -- "
+          "a geomean across suites with different units (rows/s vs img/s "
+          "vs tok/s vs GFLOPS) would be dimensionally meaningless.</p>"
     )
 
 

@@ -101,8 +101,10 @@ def run(
                                help="Run on a remote SSH host (alias from ~/.ssh/config). "
                                     "Project is rsynced; results are pulled back to ./results/<host>-<runid>/."),
     gpu_extra: bool = typer.Option(False, "--gpu",
-                                   help="When used with --remote, install the gpu extra "
-                                        "(cudf-cu12 + cupy) on the remote host."),
+                                   help="Install the gpu extra (cudf-cu12 + cupy). "
+                                        "Local runs: handled by the wrapper before "
+                                        "this CLI starts (idempotent). Remote runs: "
+                                        "passed to the remote install step."),
 ) -> None:
     """Run benchmarks. Local by default; pass --remote <host> to drive a remote NVIDIA box."""
 

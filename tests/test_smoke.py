@@ -77,22 +77,26 @@ def test_power_monitor_exits_cleanly_when_no_sources_present():
 # ---- registry / suites ----
 
 def test_registry_populated_after_suite_import():
+    import src.suites.compute  # noqa: F401
     import src.suites.cv  # noqa: F401
     import src.suites.data  # noqa: F401
     import src.suites.llm  # noqa: F401
     from src.runner import registry
     rows = registry()
     suites = {b.suite for b in rows}
-    assert suites == {"data", "cv", "llm"}
-    assert len(rows) >= 25  # we register at least 25 benches across the three suites
+    assert suites == {"data", "cv", "llm", "compute"}
+    # 13 data + 25 cv + 16 llm + 5 compute ~= 59; lower bound here
+    assert len(rows) >= 50
 
 
 def test_every_bench_has_required_fields():
+    from src.config import ALL_SUITES
     from src.runner import registry
+    valid_devices = ("cpu", "cuda", "mps", "cuda_multi", "cpu_mt", "cpu_st")
     for b in registry():
         assert b.id and "." in b.id
-        assert b.suite in ("data", "cv", "llm")
-        assert b.device in ("cpu", "cuda", "mps")
+        assert b.suite in ALL_SUITES
+        assert b.device in valid_devices, f"{b.id} has unknown device {b.device}"
         assert b.expected_seconds > 0
 
 
@@ -151,10 +155,13 @@ def test_compute_scores_basic_shape():
     cpu_data = rep.per_device_per_suite["cpu"]["data"]
     # geomean(100, 400) * 1000 = 200_000
     assert cpu_data.score == 200_000.0
-    cuda_total = rep.per_device_total["cuda"]
-    assert cuda_total.score == 2_000_000.0
-    assert cuda_total.avg_watts == 250.0
-    assert cuda_total.pts_per_watt == round(2_000_000.0 / 250.0, 2)
+    # per_device_total is intentionally NOT populated -- a geomean across
+    # suites with different units is meaningless.
+    assert rep.per_device_total == {}
+    cuda_cv = rep.per_device_per_suite["cuda"]["cv"]
+    assert cuda_cv.score == 2_000_000.0
+    assert cuda_cv.avg_watts == 250.0
+    assert cuda_cv.pts_per_watt == round(2_000_000.0 / 250.0, 2)
 
 
 # ---- report renderer ----

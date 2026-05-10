@@ -205,9 +205,10 @@ class PowerWindow:
     cpu_energy_j: float | None = None
     cpu_estimated: bool = False
 
-    gpu_avg_w: float | None = None
-    gpu_energy_j: float | None = None
-    gpu_peak_w: float | None = None
+    gpu_avg_w: float | None = None         # primary GPU only (index 0)
+    gpu_energy_j: float | None = None      # primary GPU only
+    gpu_peak_w: float | None = None        # peak across all GPUs
+    gpu_avg_w_total: float | None = None   # avg of per-sample sums (multi-GPU benches)
 
     def to_dict(self) -> dict:
         return {
@@ -218,15 +219,22 @@ class PowerWindow:
             "gpu_avg_w": None if self.gpu_avg_w is None else round(self.gpu_avg_w, 2),
             "gpu_energy_j": None if self.gpu_energy_j is None else round(self.gpu_energy_j, 2),
             "gpu_peak_w": None if self.gpu_peak_w is None else round(self.gpu_peak_w, 2),
+            "gpu_avg_w_total": None if self.gpu_avg_w_total is None else round(self.gpu_avg_w_total, 2),
             "n_samples": len(self.samples),
         }
 
     def power_for_device(self, device: str) -> tuple[float | None, bool]:
-        """Return (avg_watts, estimated) for the given device class."""
+        """Return (avg_watts, estimated) for the given device class.
+
+        For "cuda_multi" benches we return the SUM across all GPUs --
+        the bench is using all of them, so the honest power figure is
+        the total package draw. For plain "cuda" benches we return only
+        the primary GPU's wattage (single-GPU work; reporting the sum
+        would conflate idle GPUs into the figure)."""
+        if device == "cuda_multi":
+            return self.gpu_avg_w_total, False
         if device.startswith("cuda"):
             return self.gpu_avg_w, False
-        # cpu / mps both attribute to package power on Apple; on Linux
-        # MPS isn't a thing, so this branch is mac-only for mps.
         return self.cpu_avg_w, self.cpu_estimated
 
 
@@ -252,6 +260,7 @@ class PowerMonitor:
         self._rapl_t0_t: float = 0.0
         self._has_nvidia = _nvidia_smi_available()
         self._apple_tdp_w = apple_tdp_w  # if set, used as a steady-state CPU power estimate
+        self._gpu_sum_samples: list[float] = []  # per-sample sum across GPUs
 
     # ---------- context-manager protocol ----------
 
@@ -301,21 +310,30 @@ class PowerMonitor:
         per_gpu = _read_nvidia_power_w()
         if not per_gpu:
             return None
-        # Primary GPU is index 0. Track peak across all GPUs separately.
+        # Primary GPU is index 0. Track peak across all GPUs separately,
+        # plus per-sample sum so multi-GPU benches can attribute total
+        # package power (computed as the average of per-sample sums in
+        # _finalize). We stash the latest sum on the sample's payload by
+        # piggy-backing on `cpu_w` -- no, simpler: maintain a running
+        # list on the monitor itself.
         if self.window.gpu_peak_w is None:
             self.window.gpu_peak_w = max(per_gpu)
         else:
             self.window.gpu_peak_w = max(self.window.gpu_peak_w, *per_gpu)
+        self._gpu_sum_samples.append(sum(per_gpu))
         return per_gpu[0]
 
     def _finalize(self) -> None:
         s = self.window.samples
-        # GPU avg from per-sample readings (real numbers)
+        # GPU avg from per-sample readings (primary GPU only, real numbers)
         gpu_vals = [x.gpu_w for x in s if x.gpu_w is not None]
         if gpu_vals:
             self.window.gpu_avg_w = sum(gpu_vals) / len(gpu_vals)
             if self.window.duration_s > 0:
                 self.window.gpu_energy_j = self.window.gpu_avg_w * self.window.duration_s
+        # GPU sum-across-cards average (for multi-GPU benches)
+        if self._gpu_sum_samples:
+            self.window.gpu_avg_w_total = sum(self._gpu_sum_samples) / len(self._gpu_sum_samples)
 
         # CPU: prefer RAPL delta (real); else Apple Silicon TDP estimate.
         if self._rapl_path is not None and self._rapl_t0_uj is not None:

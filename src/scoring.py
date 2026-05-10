@@ -36,7 +36,13 @@ SCORE_SCALE = 1000.0
 
 
 def _device_class(device: str) -> str:
-    """Bucket per-bench device strings into the three reporting classes."""
+    """Bucket per-bench device strings into the three reporting classes.
+
+    Anything starting with "cuda" -- including "cuda_multi" used by the
+    multi-GPU benches -- buckets into "cuda" so the suite score reflects
+    the host's overall CUDA capability. Anything starting with "cpu"
+    (including "cpu_st" / "cpu_mt" used by the compute suite for
+    single/multi-thread variants) buckets into "cpu"."""
     if device.startswith("cuda"):
         return "cuda"
     if device == "mps":
@@ -69,6 +75,14 @@ class DeviceScore:
 @dataclass(slots=True)
 class ScoreReport:
     per_device_per_suite: dict[str, dict[str, DeviceScore]] = field(default_factory=dict)
+    # NOTE: per_device_total is intentionally NOT populated. A geomean
+    # across suites with wildly different units (M rows/s + img/s + tok/s
+    # + GFLOPS) is a dimensionally meaningless number; keeping it would
+    # invite users to compare it across hosts as if it were calibrated
+    # against something. The per-suite scores ARE meaningful (geomean of
+    # similar-unit benches within a suite) and that's the level we report.
+    # The field stays on the dataclass for backward-compat with old code
+    # that loads ScoreReport from JSON, but compute() leaves it empty.
     per_device_total: dict[str, DeviceScore] = field(default_factory=dict)
 
 
@@ -106,31 +120,7 @@ def compute(results: list[BenchResult]) -> ScoreReport:
             estimated_power=any_est,
         )
 
-    # Totals: geomean of per-suite scores per device. Same trick: a
-    # device that didn't run a suite (e.g. CPU on the LLM suite when LLM
-    # was CUDA-only) just contributes fewer suites to its total.
-    for dev, suite_scores in rep.per_device_per_suite.items():
-        suite_vals = [s.score for s in suite_scores.values() if s.score is not None]
-        gm = _geomean(suite_vals) if suite_vals else None
-        total = round(gm, 1) if gm is not None else None
-
-        # Use the per-device average across all benches (same set the
-        # suite scores aggregate)
-        all_w = [s.avg_watts for s in suite_scores.values() if s.avg_watts is not None]
-        avg_w = sum(all_w) / len(all_w) if all_w else None
-        all_e = [s.energy_j for s in suite_scores.values() if s.energy_j is not None]
-        energy_j = sum(all_e) if all_e else None
-        any_est = any(s.estimated_power for s in suite_scores.values())
-
-        ppw = (total / avg_w) if (total is not None and avg_w and avg_w > 0) else None
-
-        rep.per_device_total[dev] = DeviceScore(
-            device=dev, suite="total", score=total,
-            n_benches=sum(s.n_benches for s in suite_scores.values()),
-            avg_watts=round(avg_w, 2) if avg_w else None,
-            energy_j=round(energy_j, 1) if energy_j else None,
-            pts_per_watt=round(ppw, 2) if ppw else None,
-            estimated_power=any_est,
-        )
+    # Per-device totals deliberately not computed -- see the docstring
+    # on ScoreReport.per_device_total above.
 
     return rep

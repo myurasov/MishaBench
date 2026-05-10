@@ -88,6 +88,11 @@ def _capability_ok(bench: Bench, info: SystemInfo, cfg: BenchConfig) -> tuple[bo
     for cap in bench.requires:
         if cap == "cuda" and not (info.has_cuda and cfg.use_cuda):
             return False, "CUDA not available"
+        if cap == "cuda_multi":
+            if not (info.has_cuda and cfg.use_cuda):
+                return False, "CUDA not available"
+            if len(info.gpus) < 2:
+                return False, f"need >=2 GPUs (found {len(info.gpus)})"
         if cap == "mps" and not (info.has_mps and cfg.use_mps):
             return False, "MPS not available"
         if cap == "cudf" and not info.has_cudf:
