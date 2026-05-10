@@ -29,6 +29,7 @@ the `with PowerMonitor(...) as window:` context manager.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import threading
@@ -97,6 +98,57 @@ def _rapl_package_path() -> Path | None:
                 except (OSError, PermissionError, ValueError):
                     continue
     return None
+
+
+def rapl_status() -> tuple[str, Path | None, str | None]:
+    """Diagnose RAPL availability without reading energy values.
+
+    Returns (status, path, hint):
+      - status: "ok"               -> energy_uj readable, will be sampled
+                "permission_denied" -> file exists, mode 0400 (root-only).
+                                       Default on most distros after
+                                       CVE-2020-8694 / "platypus" mitigation.
+                                       The hint string says how to fix it.
+                "missing"           -> /sys/class/powercap absent (macOS,
+                                       BSD, container with /sys masked) or
+                                       no intel-rapl:N domain present (AMD
+                                       on older kernels, ARM systems).
+      - path: the energy file we'd sample (for the "permission_denied"
+              case so the report can show its exact location)
+      - hint: a one-line "how to fix" message, or None
+    """
+    if not _RAPL_ROOT.exists():
+        return "missing", None, None
+
+    candidates = [d for d in sorted(_RAPL_ROOT.glob("intel-rapl:*"))
+                  if d.name.count(":") == 1]
+    if not candidates:
+        return "missing", None, None
+
+    locked: Path | None = None
+    for d in candidates:
+        energy = d / "energy_uj"
+        if not energy.exists():
+            continue
+        if not os.access(energy, os.R_OK):
+            locked = energy
+            continue
+        try:
+            int(energy.read_text().strip())
+            return "ok", energy, None
+        except (OSError, PermissionError, ValueError):
+            locked = locked or energy
+            continue
+
+    if locked is not None:
+        hint = (
+            f"RAPL energy file present but not readable ({locked}); "
+            f"one-time fix: sudo chmod a+r /sys/class/powercap/intel-rapl*/energy_uj "
+            f"(default Linux locks RAPL to root after CVE-2020-8694)"
+        )
+        return "permission_denied", locked, hint
+
+    return "missing", None, None
 
 
 def _read_rapl_uj(path: Path) -> int | None:

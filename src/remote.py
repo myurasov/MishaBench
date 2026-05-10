@@ -87,8 +87,15 @@ def run_remote(host: str, *, suites: str | None = None, quick: bool = False,
 
     # 3. Ensure uv + sync remote venv. Streamed -- the user sees uv's
     #    "Resolved N packages" / "Downloaded torch (700 MiB)" progress
-    #    live, instead of waiting silently while gigabytes copy. With
-    #    --gpu we also `uv pip install` the RAPIDS stack out-of-band
+    #    live, instead of waiting silently while gigabytes copy.
+    #
+    #    The script also auto-fixes the torch CUDA wheel: PyPI's default
+    #    torch ships with cu130 these days; older drivers (e.g. 535.x ->
+    #    CUDA 12.2) need cu126 or cu118 instead. We detect the mismatch
+    #    via `torch.cuda.is_available()` after the initial sync and
+    #    reinstall from the appropriate PyTorch index when needed.
+    #
+    #    With --gpu we also `uv pip install` the RAPIDS stack out-of-band
     #    against pypi.nvidia.com.
     extras = "--extra dev"
     gpu_step = (
@@ -106,6 +113,47 @@ def run_remote(host: str, *, suites: str | None = None, quick: bool = False,
         fi
         cd {remote_tool}
         uv sync {extras}
+
+        # Auto-fix torch CUDA wheel if driver/wheel mismatch detected.
+        # Skipped when MISHABENCH_TORCH_CUDA=cpu or the user explicitly
+        # forces a particular index via the env var.
+        TC="${{MISHABENCH_TORCH_CUDA:-auto}}"
+        if [ "$TC" = "cpu" ]; then
+          echo "==== MISHABENCH_TORCH_CUDA=cpu -- installing CPU-only torch ===="
+          uv pip install --index-url https://download.pytorch.org/whl/cpu \\
+            torch torchvision --reinstall
+        elif [ "$TC" != "auto" ]; then
+          echo "==== MISHABENCH_TORCH_CUDA=$TC -- forcing torch wheel ===="
+          uv pip install --index-url "https://download.pytorch.org/whl/$TC" \\
+            torch torchvision --reinstall
+        elif command -v nvidia-smi >/dev/null 2>&1; then
+          if ! .venv/bin/python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+            DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | head -1 | cut -d. -f1 | tr -d ' ')
+            if [ -n "$DRV" ]; then
+              CU=""
+              if [ "$DRV" -ge 545 ]; then
+                echo "==== driver $DRV supports cu130 (default); skipping reinstall ===="
+              elif [ "$DRV" -ge 525 ]; then
+                CU=cu126
+              elif [ "$DRV" -ge 470 ]; then
+                CU=cu118
+              else
+                echo "==== driver $DRV too old for any current torch CUDA build ===="
+              fi
+              if [ -n "$CU" ]; then
+                echo "==== driver $DRV detected; reinstalling torch from https://download.pytorch.org/whl/$CU ===="
+                uv pip install --index-url "https://download.pytorch.org/whl/$CU" \\
+                  torch torchvision --reinstall
+                if .venv/bin/python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+                  echo "==== torch.cuda now sees the GPU ===="
+                else
+                  echo "==== torch.cuda still unavailable; CUDA benches will skip ===="
+                fi
+              fi
+            fi
+          fi
+        fi
+
         {gpu_step}
         echo "==== uv sync complete ===="
     """)
@@ -124,10 +172,15 @@ def run_remote(host: str, *, suites: str | None = None, quick: bool = False,
     flags += ["--output", remote_results, "--label", f"remote={host}"]
     flag_str = " ".join(flags)
 
+    # Invoke .venv/bin/python directly, NOT `uv run python` -- the latter
+    # triggers an implicit `uv sync` before every command, which reverts
+    # our auto-fix's cu126 torch install back to the lockfile's cu130
+    # exactly when the bench is about to start. Mirrors what the local
+    # wrapper does (PYTHONPATH=$HERE exec $VENV_DIR/bin/python -m src ...).
     console.print(f"[bold]>[/bold] running on {host}: mishabench run {flag_str}")
     rc = _run.ssh_stream(host, f"""
         export PATH="$HOME/.local/bin:$PATH"
-        cd {remote_tool} && PYTHONPATH={remote_tool} uv run python -m src run {flag_str}
+        cd {remote_tool} && PYTHONPATH={remote_tool} .venv/bin/python -m src run {flag_str}
     """)
     if rc != 0:
         console.print(f"[red]remote bench exited rc={rc}[/red] -- "

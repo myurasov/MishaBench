@@ -16,6 +16,17 @@ Accumulated maintainer preferences. Each entry is a hard rule unless explicitly 
 - **Apple Silicon power is always estimated.** Never shell out to `powermetrics` -- it requires sudo at run time, which the user shouldn't have to type to run a benchmark. The chip-name TDP table in `power.py` is the authoritative source on macOS.
 - **Linux RAPL is read-only and probed once.** If the file isn't readable at probe time, CPU power is "n/a" for the whole run. Don't retry mid-run -- permissions don't change at runtime.
 
+## Torch CUDA wheel auto-fix
+
+- **`./mishabench install` reinstalls torch from a driver-compat PyTorch index** when the default cu130 wheel can't see the GPU. Detected via `torch.cuda.is_available()` after the initial `uv sync`. Mapping: driver >= 545 → default (cu130), 525-544 → cu126, 470-524 → cu118.
+- **`MISHABENCH_TORCH_CUDA` env var overrides the auto-detect.** Values: `auto` (default), `cu118` / `cu121` / `cu126` / `cu128` / `cu130`, or `cpu`. The wrapper and the remote driver both read it.
+- **Don't pin a specific torch version in `pyproject.toml`** to side-step this. Pinning loses the auto-fix benefit and the user has to manually update across torch releases. The auto-fix runs once per `install` and is idempotent.
+
+## RAPL on Linux
+
+- **`/sys/class/powercap/intel-rapl:N/energy_uj` is mode 0400 by default** on most distros after CVE-2020-8694 ("platypus" attack). The probe detects this and surfaces a `rapl_status="permission_denied"` + a one-line `sudo chmod a+r /sys/class/powercap/intel-rapl*/energy_uj` hint in the report's System section. We do NOT auto-chmod -- it requires root and we don't ask for sudo at probe time.
+- **AMD CPUs on recent kernels** expose RAPL via the same `intel-rapl:N` interface (confusingly named); the same probe path works. Older AMD-only paths (`/sys/class/hwmon/hwmonN/energy*_input` for k10temp) aren't covered yet -- file an issue if you hit a host where they're the only source.
+
 ## Gotchas
 
 - **First-run model downloads count against the budget.** TinyLlama (~2.2 GiB), MiniLM (~80 MiB), DINOv2 (~85 MiB), ResNet-50 (~100 MiB), EfficientNet-B0 (~20 MiB). On a slow link this can eat 10-15 minutes of the 60-min budget. Quick-mode runs the same downloads but uses smaller workloads -- the model size is the model size.

@@ -226,6 +226,44 @@ def test_parse_na_helpers():
     assert _parse_int_or_none("not a number") is None
 
 
+def test_rapl_status_handles_missing_root():
+    """On macOS / BSD / containers with /sys masked, rapl_status() must
+    return ("missing", None, None) without crashing."""
+    from src.power import rapl_status
+    s, p, h = rapl_status()
+    assert s in {"ok", "permission_denied", "missing"}
+    if s == "missing":
+        assert p is None
+        assert h is None
+    elif s == "permission_denied":
+        assert p is not None
+        assert h is not None
+        assert "chmod" in h
+
+
+def test_rapl_hint_renders_in_report():
+    """When the probe reports permission_denied with a hint, the report's
+    System section must include a 'Power hint' row with the hint text."""
+    from src.report import render
+    from src.system import SystemInfo
+    hint = ("RAPL energy file present but not readable "
+            "(/sys/class/powercap/intel-rapl:0/energy_uj); one-time fix: "
+            "sudo chmod a+r /sys/class/powercap/intel-rapl*/energy_uj")
+    info = SystemInfo(
+        hostname="mlbox", os_name="Linux", os_version="5.15", kernel="x",
+        arch="x86_64", distro="Ubuntu 20.04", cpu_model="Xeon",
+        cpu_count_physical=20, cpu_count_logical=40, ram_total_gb=251.6,
+        ram_avail_gb=200.0, disk_total_gb=2000.0, disk_free_gb=1500.0,
+        python_version="3.12.1", python_impl="CPython",
+        libs={"torch": "2.4"}, has_cuda=False, has_rapl=False,
+        rapl_status="permission_denied", rapl_hint=hint,
+    )
+    html = render([], info, total_seconds=0.0)
+    assert "Power hint" in html
+    assert "chmod a+r" in html
+    assert "root-only" in html  # the inline disclosure bit
+
+
 # ---- CLI ----
 
 def test_cli_help_exits_zero():

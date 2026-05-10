@@ -51,9 +51,14 @@ def info() -> None:
         console.print(f"  Apple chip TDP estimate: {sys.apple_tdp_w:.0f} W (will be used for points/watt)")
     if sys.has_rapl:
         console.print("  Intel RAPL: available (CPU power = real)")
+    elif sys.rapl_status == "permission_denied":
+        console.print("  [yellow]Intel RAPL: present but locked to root[/yellow]")
+        if sys.rapl_hint:
+            console.print(f"  hint: {sys.rapl_hint}")
     if sys.gpus:
         for g in sys.gpus:
-            console.print(f"  GPU[{g.index}]: {g.name} -- {g.memory_mib} MiB, "
+            mem = f"{g.memory_mib} MiB" if g.memory_mib else "memory n/a (unified)"
+            console.print(f"  GPU[{g.index}]: {g.name} -- {mem}, "
                           f"driver {g.driver}, sm_{g.compute_cap}")
     missing = [k for k, v in sys.libs.items() if v is None]
     if missing:

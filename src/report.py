@@ -167,9 +167,13 @@ def _system_grid(info: SystemInfo) -> str:
         power_sources.append("nvidia-smi (real)")
     if info.has_rapl:
         power_sources.append("Intel RAPL (real)")
+    elif info.rapl_status == "permission_denied":
+        power_sources.append("Intel RAPL (present, root-only -- see hint below)")
     if info.apple_tdp_w is not None:
         power_sources.append(f"Apple chip TDP table = {info.apple_tdp_w:.0f} W (estimated)")
     rows.append(("Power source", ", ".join(power_sources) if power_sources else "n/a"))
+    if info.rapl_hint:
+        rows.append(("Power hint", info.rapl_hint))
 
     libs_inline = ", ".join(
         f"{name}={ver}" for name, ver in sorted(info.libs.items()) if ver

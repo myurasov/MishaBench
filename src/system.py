@@ -75,6 +75,8 @@ class SystemInfo:
     # Power-monitor capability + Apple Silicon TDP estimate
     apple_tdp_w: float | None = None  # set when CPU brand maps to APPLE_TDP_W
     has_rapl: bool = False  # /sys/class/powercap/intel-rapl:0/energy_uj readable
+    rapl_status: str = "missing"  # "ok" | "permission_denied" | "missing"
+    rapl_hint: str | None = None  # one-line "how to fix" if rapl_status != "ok"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -282,10 +284,11 @@ def probe() -> SystemInfo:
     du_free = _safe(lambda: psutil.disk_usage("/").free, 0)
 
     apple_tdp = detect_apple_tdp_w(cpu_model) if sysname == "Darwin" else None
-    has_rapl = False
+    rapl_state, _rapl_path, rapl_hint = "missing", None, None
     if sysname == "Linux":
-        from .power import _rapl_package_path
-        has_rapl = _rapl_package_path() is not None
+        from .power import rapl_status
+        rapl_state, _rapl_path, rapl_hint = rapl_status()
+    has_rapl = rapl_state == "ok"
 
     return SystemInfo(
         hostname=socket.gethostname(),
@@ -313,6 +316,8 @@ def probe() -> SystemInfo:
         has_cupy=libs["cupy"] is not None,
         apple_tdp_w=apple_tdp,
         has_rapl=has_rapl,
+        rapl_status=rapl_state,
+        rapl_hint=rapl_hint,
     )
 
 

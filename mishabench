@@ -77,6 +77,13 @@ sync_deps() {
     touch "$INSTALL_STAMP"
   fi
 
+  # If the default torch wheel doesn't match the host's NVIDIA driver
+  # (PyPI ships cu130 these days; older drivers need cu126 / cu118),
+  # detect the mismatch and reinstall torch from the appropriate
+  # PyTorch index. Honor MISHABENCH_TORCH_CUDA as an explicit override
+  # ("auto", "cu118", "cu121", "cu126", "cu128", "cu130", "cpu").
+  fix_torch_cuda_if_needed
+
   # GPU extras (RAPIDS) are installed out-of-band: cudf-cu12 / cupy-cuda12x
   # ship as nvidia-stub placeholders that fail metadata resolution on
   # macOS, so we keep them out of pyproject.toml (where `uv sync` would
@@ -89,6 +96,72 @@ sync_deps() {
       warn "gpu extras failed to install; cudf/cupy benches will be skipped at run time"
       warn "(this is expected on non-Linux or non-CUDA hosts; remove $GPU_STAMP to drop the marker)"
     fi
+  fi
+}
+
+torch_cuda_works() {
+  "$VENV_DIR/bin/python" -c \
+    "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
+    >/dev/null 2>&1
+}
+
+install_torch_index() {
+  # Reinstall torch + torchvision from the given PyTorch wheel index
+  # (e.g. https://download.pytorch.org/whl/cu126). Returns 0 on success.
+  local cu="$1"
+  local url="https://download.pytorch.org/whl/$cu"
+  log "  reinstalling torch + torchvision from $url"
+  uv pip install --index-url "$url" torch torchvision --reinstall && return 0
+  warn "  --index-url install failed, retrying with --extra-index-url"
+  uv pip install --extra-index-url "$url" torch torchvision --reinstall
+}
+
+fix_torch_cuda_if_needed() {
+  local choice="${MISHABENCH_TORCH_CUDA:-auto}"
+
+  if [ "$choice" = "cpu" ]; then
+    log "MISHABENCH_TORCH_CUDA=cpu -- installing CPU-only torch"
+    install_torch_index "cpu" || warn "CPU torch install failed; existing wheel left in place"
+    return
+  fi
+
+  if [ "$choice" != "auto" ]; then
+    log "MISHABENCH_TORCH_CUDA=$choice -- forcing torch wheel from $choice index"
+    install_torch_index "$choice" || warn "torch reinstall from $choice failed"
+    return
+  fi
+
+  # Auto: only act if there's an NVIDIA GPU but torch.cuda doesn't see it.
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  if torch_cuda_works; then
+    return 0
+  fi
+
+  local drv
+  drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null \
+         | head -1 | cut -d. -f1 | tr -d ' ')
+  if [ -z "$drv" ]; then
+    return 0
+  fi
+
+  log "torch.cuda unavailable; nvidia driver $drv detected -- selecting compatible torch wheel"
+  local cu=""
+  if [ "$drv" -ge 545 ]; then
+    log "  driver $drv supports cu130 (default); skipping reinstall (mismatch likely elsewhere)"
+    return 0
+  elif [ "$drv" -ge 525 ]; then
+    cu="cu126"
+  elif [ "$drv" -ge 470 ]; then
+    cu="cu118"
+  else
+    warn "  driver $drv too old for any current torch CUDA build; CUDA benches will skip"
+    return 0
+  fi
+  install_torch_index "$cu" || warn "  torch reinstall failed; CUDA benches will skip"
+  if torch_cuda_works; then
+    log "  torch.cuda now sees the GPU"
+  else
+    warn "  torch.cuda still unavailable after reinstall; CUDA benches will skip"
   fi
 }
 

@@ -114,6 +114,11 @@ form; the default is "all three".
     cumulative microjoule counter, sampled at bench start and end.
     delta_J / wall_seconds = avg watts. Negative deltas treated as
     counter wraparound and dropped (rare in seconds-scale benches).
+    On most distros the file is `chmod 0400` (root-only) by default
+    after the CVE-2020-8694 / "platypus" mitigation. The probe surfaces
+    this state as `rapl_status="permission_denied"` and renders an
+    inline hint in the System section: `sudo chmod a+r
+    /sys/class/powercap/intel-rapl*/energy_uj` (one-time per boot).
   - **Apple Silicon**: chip-name lookup table in `power.APPLE_TDP_W`.
     Values are sustained-package TDPs. Marked `estimated=True` and
     rendered with a star in the report. We do not call `powermetrics`
@@ -182,8 +187,41 @@ results/<runid>/
     *.egg-info, dist, build, uv.lock (remote resolves its own), .git,
     results/, .mishabench-cache/, *.parquet.
 
-9. Progress visibility
-----------------------
+9. Torch CUDA wheel selection
+-----------------------------
+
+  PyPI's default `torch` wheel ships with CUDA 13 (cu130), which needs
+  NVIDIA driver >= 545. Many existing GPU hosts run older drivers (the
+  535.x family is common, supporting CUDA 12.2). When the default wheel
+  loads with `torch.cuda.is_available()` == False but nvidia-smi sees
+  a GPU, the install paths reinstall torch from a driver-compatible
+  PyTorch index:
+
+    Local: `./mishabench install` -> `fix_torch_cuda_if_needed` (in the
+           wrapper) checks the post-sync `torch.cuda.is_available()`
+           and reinstalls from cu126 / cu118 as appropriate.
+    Remote: `./mishabench run --remote ...` does the same check inside
+            the remote `uv sync` heredoc. Streamed output makes the
+            reinstall visible to the user.
+
+  Driver -> wheel mapping (kept conservative; PyTorch publishes more
+  combinations than these):
+
+    driver >= 545: default (cu130 from PyPI; no reinstall)
+    driver 525-544: cu126
+    driver 470-524: cu118
+    driver < 470:   warning, CUDA benches will skip
+
+  Manual override: set `MISHABENCH_TORCH_CUDA` to one of:
+    auto     (default; the detection above)
+    cu118 / cu121 / cu126 / cu128 / cu130
+    cpu      (CPU-only torch, smaller venv, all CUDA benches skip)
+
+  The wrapper passes the env var through; the remote driver reads it
+  on the host inside the heredoc.
+
+10. Progress visibility
+-----------------------
 
   - `./mishabench install` runs `uv sync --extra dev` without --quiet so
     the user sees uv's "Resolved N packages / Downloaded torch (700 MiB)
@@ -205,7 +243,7 @@ results/<runid>/
     if a multi-GiB torch wheel is downloading on the remote, the user
     sees the progress bar.
 
-10. CLI contract
+11. CLI contract
 ----------------
 
   ./mishabench info                       -- system probe one-liner + power source disclosure
