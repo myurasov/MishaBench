@@ -173,9 +173,9 @@ mishabench/
   tests/
     test_smoke.py
   ai/
-    dev.agent.md           -- maintainer agent rules
-    dev.memory.md          -- maintainer accumulated preferences
-    spec.txt               -- canonical spec for what the bench measures
+    engineer.agent.md        -- agent rules (coder + planner + runner)
+    engineer.instructions.md -- build/run commands + conventions
+    spec.md                  -- canonical spec for what the bench measures
 ```
 
 ## Notes

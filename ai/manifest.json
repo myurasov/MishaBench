@@ -1,0 +1,29 @@
+{
+  "_comment": "Managed by Solaris; do not edit by hand. Versions live here (no .version files). No host/deploy/secret specifics - those live in ai/memory/.",
+  "schema_version": 1,
+  "project": {
+    "name": "MishaBench",
+    "slug": "mishabench",
+    "type": "python-cli",
+    "mode": "embedded"
+  },
+  "framework_version": "0.6.1",
+  "plugins": [],
+  "revisions": {
+    "AGENTS.md": {
+      "rev": 5,
+      "hash": "d9ce31e1062e118ef7977f0f69de00d5da62b28443a2ce33e97e049e03926f8e"
+    },
+    "ai/engineer.agent.md": {
+      "rev": 7,
+      "hash": "fd2ab6146d03b8579822c72a0472fe23620dc18f88ca2157fba4564e5ebb993a"
+    }
+  },
+  "created": "2026-06-06",
+  "info": {
+    "upstream": "github.com/myurasov/MishaBench",
+    "license": "Apache-2.0",
+    "entry": "./mishabench wrapper (reserved dev verbs) else forwarded to python -m src",
+    "imported_from": "see ai/memory/info.md"
+  }
+}

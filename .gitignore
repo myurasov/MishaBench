@@ -43,3 +43,5 @@ results/
 !.env.example
 *.creds
 .creds
+
+ai/memory/*

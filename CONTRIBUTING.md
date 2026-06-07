@@ -61,7 +61,7 @@ A reviewer will look at the PR. Please respond to review comments promptly; PRs 
 
 - Keep PRs focused. If you find unrelated bugs while working on something, file a separate issue / PR.
 - Update tests under `tests/` whenever you add or change behavior.
-- Update `README.md` and/or `ai/spec.txt` whenever the user-facing surface or measurement contract changes.
+- Update `README.md` and/or `ai/spec.md` whenever the user-facing surface or measurement contract changes.
 - Update [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) in the same PR whenever you add, remove, or upgrade a runtime / dev dependency in `pyproject.toml`.
 - Commit messages should be in imperative mood (`Add foo`, `Fix bar`, `Refactor baz`) and keep the subject ≤ 72 chars when practical. ASCII only.
 
