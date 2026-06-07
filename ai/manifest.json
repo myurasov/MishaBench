@@ -12,11 +12,11 @@
   "revisions": {
     "AGENTS.md": {
       "rev": 5,
-      "hash": "d9ce31e1062e118ef7977f0f69de00d5da62b28443a2ce33e97e049e03926f8e"
+      "hash": "f0e58180184acdea3a23c5c452b2694038a37bb03a30a0b94a49abf3ae615c1e"
     },
     "ai/engineer.agent.md": {
-      "rev": 7,
-      "hash": "fd2ab6146d03b8579822c72a0472fe23620dc18f88ca2157fba4564e5ebb993a"
+      "rev": 8,
+      "hash": "ffbad90ecfeafa9d599c9f0efa8d9c57eb7f08db3d86c470a5bb8130d973849c"
     }
   },
   "created": "2026-06-06",

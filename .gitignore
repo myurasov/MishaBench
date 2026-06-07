@@ -45,3 +45,4 @@ results/
 .creds
 
 ai/memory/*
+.secrets.env

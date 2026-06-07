@@ -46,7 +46,7 @@ measurement as the primary invariant:
 
 ## Build / run / test
 
-All commands run from `source/` (the repo root). The `./mishabench` bash wrapper is the single entry point. **Never bootstrap the venv manually** (no `pip`,
+All commands run from the repo root (`projects/mishabench/`). The `./mishabench` bash wrapper is the single entry point. **Never bootstrap the venv manually** (no `pip`,
 no `python -m venv`, no bare `python -m src`): the wrapper sets `PYTHONPATH=$HERE` and bootstraps the venv via
 `uv sync` on first use. By design the project is **not pip-installable** (`pyproject.toml` -> `[tool.uv]
 package = false`); `python -m src` is the canonical invocation. Running as a module (not an editable install)
