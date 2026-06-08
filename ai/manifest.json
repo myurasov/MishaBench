@@ -7,7 +7,7 @@
     "type": "python-cli",
     "mode": "embedded"
   },
-  "framework_version": "0.6.1",
+  "framework_version": "0.8.0",
   "plugins": [],
   "revisions": {
     "AGENTS.md": {
@@ -15,8 +15,8 @@
       "hash": "f0e58180184acdea3a23c5c452b2694038a37bb03a30a0b94a49abf3ae615c1e"
     },
     "ai/engineer.agent.md": {
-      "rev": 8,
-      "hash": "ffbad90ecfeafa9d599c9f0efa8d9c57eb7f08db3d86c470a5bb8130d973849c"
+      "rev": 10,
+      "hash": "2cfc1ed6deee7dd1eb98a4c7214d418ded1a6a9bd51a16896ec63762070322bd"
     }
   },
   "created": "2026-06-06",
@@ -24,6 +24,6 @@
     "upstream": "github.com/myurasov/MishaBench",
     "license": "Apache-2.0",
     "entry": "./mishabench wrapper (reserved dev verbs) else forwarded to python -m src",
-    "imported_from": "see ai/memory/info.md"
+    "imported_from": "see ai/memory/context.md"
   }
 }

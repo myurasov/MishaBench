@@ -1,4 +1,4 @@
-_Rev. 8_
+_Rev. 10_
 
 # MishaBench - Engineer Agent <!-- omit in toc -->
 
@@ -21,7 +21,8 @@ command center. Edit this file to tune how this project is developed.
 3. `ai/engineer.instructions.md` - shareable build/run/test commands + conventions (sits in `ai/` beside
    this file; portable, no host/secret/internal-URL specifics).
 4. `ai/memory/` (the private/local layer, not for sharing): `resources.md` (hosts, deploy target, hardware,
-   APIs), `credentials.md` (secrets; never echo or commit).
+   APIs), `credentials.md` (secrets; never echo or commit), `context.md` (the verbose, model-facing context
+   log - read it first for prior context).
 5. Every `ai/<plugin>/` overlay: load each `*.rule.md` (always-on) and treat each `*.skill.md` as a
    trigger-invoked skill.
 6. local mode: `source/AGENTS.md` if present, as project rules. remote-code mode: `remote.json` (host/path) -
@@ -31,7 +32,8 @@ command center. Edit this file to tune how this project is developed.
 **If `ai/memory/` is missing or empty** (this ai-pack was shared without its private layer): do not guess or
 invent host/deploy/credential values. First **bootstrap it interactively** - ask the user for the deploy/run
 target and hosts, hardware/APIs, and any secrets, then write `ai/memory/resources.md` and
-`ai/memory/credentials.md` (and seed `ai/memory/interactions.jsonl`) before doing project work.
+`ai/memory/credentials.md` (and seed `ai/memory/interactions.jsonl` and a fresh `ai/memory/context.md`)
+before doing project work.
 
 ## Planning workflow
 
@@ -59,10 +61,18 @@ When the user teaches a durable preference about this project, update `ai/engine
 (rewrite to keep the best version; keep it shareable - relocate any host/secret/internal-URL specifics into
 `ai/memory/`, never drop them).
 
-Log every meaningful turn as one append-only `{ts, project, request, outcome}` line in **both** this
-project's `ai/memory/interactions.jsonl` (every project-relevant request + its outcome) and the framework
-master `memory/interactions.jsonl` (the record of all work). The prompt-submit hook also captures the raw
-request to the master as a fail-safe.
+Log every meaningful turn as one append-only `{ts, project, prompt, request, outcome}` line - `prompt` the
+user's raw verbatim prompt, `request` your interpreted restatement, `outcome` what happened - in **both**
+this project's `ai/memory/interactions.jsonl` and the framework master `memory/interactions.jsonl` (the
+record of all work), identical schema in both. The prompt-submit hook also appends a raw-prompt backstop line
+to the master as a fail-safe.
+
+Also append a verbose entry to `ai/memory/context.md` (the model-facing context log) each meaningful turn:
+the same trigger as the interaction line, but in prose - what was asked, what you did and answered, the
+decisions, and the findings. Put the newest entry at the top of its `## Log`; keep that section under
+~100KB, compacting (summarizing, never deleting) the oldest entries into `## Previous History` when it grows
+past that. Keep the curated `## Standing context` current. Only the engineer and Solaris agents write this
+file; refresh its TOC with `uv run -m solaris.tools.toc --write` after structural edits.
 
 ## Commit policy (embedded - keep even when detached)
 
